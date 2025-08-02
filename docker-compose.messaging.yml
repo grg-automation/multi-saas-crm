@@ -1,0 +1,181 @@
+# Docker Compose для Messaging System (DEV Environment)
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=crm_messaging_dev
+      - POSTGRES_USER=crm_user
+      - POSTGRES_PASSWORD=crm_password
+      - POSTGRES_MULTIPLE_DATABASES=crm_messaging_dev,crm_analytics_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - crm-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - crm-network
+
+  # Core CRM Service (Kotlin + Spring Boot) - Main Backend
+  core-crm:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    environment:
+      - SPRING_PROFILES_ACTIVE=dev
+      - DATABASE_URL=jdbc:postgresql://postgres:5432/crm_messaging_dev
+      - DATABASE_USERNAME=crm_user
+      - DATABASE_PASSWORD=crm_password
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev_jwt_secret_key_unified_for_all_services_32_chars
+      - NOTIFICATION_SERVICE_URL=http://notification-service:3003
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - crm-network
+    volumes:
+      - ./core/logs:/app/logs
+
+  # Notification Service (NestJS) - Messaging Hub
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=development
+      - PORT=3003
+      - CRM_API_URL=http://core-crm:8080/api/v1
+      - DEFAULT_TENANT_ID=00000000-0000-0000-0000-000000000001
+      - WEBHOOK_BASE_URL=https://your-ngrok-url.ngrok.io
+      # Database Configuration
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=crm_user
+      - DATABASE_PASSWORD=crm_password
+      - DATABASE_NAME=crm_messaging_dev
+      # Telegram Configuration
+      - TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+      # Telegram User API (MTProto)
+      - TELEGRAM_API_ID=25350118
+      - TELEGRAM_API_HASH=47911da0feba54e84594b94b555b972b
+      - TELEGRAM_MTPROTO_ENABLED=true
+      # WhatsApp Configuration  
+      - WHATSAPP_API_URL=https://graph.facebook.com/v17.0
+      - WHATSAPP_ACCESS_TOKEN=your_whatsapp_access_token
+      - WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+      - WHATSAPP_VERIFY_TOKEN=crm_verify_token_123
+      # Email Configuration
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USERNAME=your_email@gmail.com
+      - SMTP_PASSWORD=your_app_password
+    ports:
+      - "3003:3003"
+    depends_on:
+      - postgres
+      - core-crm
+      - redis
+    networks:
+      - crm-network
+    volumes:
+      - ./notification-service/logs:/app/logs
+      - ./notification-service/sessions:/app/sessions  # For Telegram user sessions (V1 Legacy)
+      - telegram_sessions:/app/telegram-sessions  # For persistent MTProto sessions (V1 Legacy)
+      - telegram_sessions_v2:/app/telegram-sessions-v2  # For persistent GramJS sessions (V2 Current)
+
+  # Identity Service (NestJS) - Auth0, OAuth2, 2FA
+  identity-service:
+    build:
+      context: ./identity-service
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=development
+      - PORT=3002
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=crm_user
+      - DB_PASSWORD=crm_password
+      - DB_NAME=crm_messaging_dev
+      - DATABASE_URL=postgresql://crm_user:crm_password@postgres:5432/crm_messaging_dev
+      - JWT_SECRET=dev_jwt_secret_key_unified_for_all_services_32_chars
+      - JWT_EXPIRES_IN=24h
+      - JWT_REFRESH_SECRET=dev_jwt_refresh_secret_key_unified_for_all_services_32_chars
+      - JWT_REFRESH_EXPIRES_IN=7d
+      - AUTH0_DOMAIN=your_auth0_domain
+      - AUTH0_CLIENT_ID=your_auth0_client_id
+      - AUTH0_CLIENT_SECRET=your_auth0_client_secret
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "3002:3002"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - crm-network
+    volumes:
+      - ./identity-service/logs:/app/logs
+
+  # Frontend (Next.js)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
+      - NEXT_PUBLIC_MESSAGING_API_URL=http://localhost:3003/api/v1
+      - NODE_ENV=development
+    ports:
+      - "3000:3000"
+    depends_on:
+      - core-crm
+      - notification-service
+    networks:
+      - crm-network
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  # API Gateway (Optional - for routing)
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - CRM_SERVICE_URL=http://core-crm:8080
+      - NOTIFICATION_SERVICE_URL=http://notification-service:3003
+      - FRONTEND_URL=http://frontend:3000
+      - JWT_SECRET=dev_jwt_secret_key_unified_for_all_services_32_chars
+    ports:
+      - "3001:3001"
+    depends_on:
+      - core-crm
+      - notification-service
+    networks:
+      - crm-network
+
+networks:
+  crm-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  telegram_sessions:      # V1 Legacy MTProto sessions
+  telegram_sessions_v2:   # V2 Current GramJS sessions
