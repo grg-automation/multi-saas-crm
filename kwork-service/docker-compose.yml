@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  kwork-service:
+    build: .
+    ports:
+      - "8004:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=false
+      - SECRET_KEY=your-secret-key-change-in-production
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    networks:
+      - crm-network
+    depends_on:
+      - redis
+      - postgres
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - crm-network
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: kwork_service
+      POSTGRES_USER: kwork_user
+      POSTGRES_PASSWORD: kwork_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - crm-network
+
+volumes:
+  postgres_data:
+
+networks:
+  crm-network:
+    driver: bridge
