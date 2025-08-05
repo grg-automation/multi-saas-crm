@@ -11,7 +11,7 @@ services:
       - POSTGRES_PASSWORD=crm_password
       - POSTGRES_MULTIPLE_DATABASES=crm_messaging_dev,crm_analytics_dev
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -22,7 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - '6379:6379'
     volumes:
       - redis_data:/data
     networks:
@@ -42,7 +42,7 @@ services:
       - JWT_SECRET=dev_jwt_secret_key_unified_for_all_services_32_chars
       - NOTIFICATION_SERVICE_URL=http://notification-service:3003
     ports:
-      - "8080:8080"
+      - '8080:8080'
     depends_on:
       - postgres
       - redis
@@ -50,6 +50,63 @@ services:
       - crm-network
     volumes:
       - ./core/logs:/app/logs
+
+  # 🔴 Kwork Service (Python + FastAPI) - Kwork Integration
+  kwork-service:
+    build:
+      context: ./kwork-service
+      dockerfile: Dockerfile
+    environment:
+      # Basic Configuration
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+
+      # Security - Use same JWT secret as main CRM
+      - SECRET_KEY=dev_jwt_secret_key_unified_for_all_services_32_chars
+      - CRM_API_KEY=dev_crm_api_key
+
+      # Unified Database - Same as main CRM
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=crm_user
+      - POSTGRES_PASSWORD=crm_password
+      - POSTGRES_DB=crm_messaging_dev
+      - DATABASE_URL=postgresql://crm_user:crm_password@postgres:5432/crm_messaging_dev
+
+      # Cache - Use shared Redis
+      - REDIS_URL=redis://redis:6379
+
+      # CRM Integration
+      - CRM_API_URL=http://core-crm:8080/api/v1
+      - API_GATEWAY_URL=http://api-gateway:3001
+
+      # Kwork Credentials (MUST be configured in .env)
+      - KWORK_TEST_USERNAME=${KWORK_USERNAME:-your_kwork_username}
+      - KWORK_TEST_PASSWORD=${KWORK_PASSWORD:-your_kwork_password}
+
+      # Multi-tenancy
+      - TENANT_ID_HEADER=X-Tenant-ID
+      - DEFAULT_TENANT_ID=00000000-0000-0000-0000-000000000001
+
+    ports:
+      - '8004:8000' # Kwork service on port 8004
+    volumes:
+      - ./kwork-service/logs:/app/logs
+      - ./kwork-service/uploads:/app/uploads
+    networks:
+      - crm-network
+    depends_on:
+      - postgres
+      - redis
+      - core-crm
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Notification Service (NestJS) - Messaging Hub
   notification-service:
@@ -74,7 +131,7 @@ services:
       - TELEGRAM_API_ID=25350118
       - TELEGRAM_API_HASH=47911da0feba54e84594b94b555b972b
       - TELEGRAM_MTPROTO_ENABLED=true
-      # WhatsApp Configuration  
+      # WhatsApp Configuration
       - WHATSAPP_API_URL=https://graph.facebook.com/v17.0
       - WHATSAPP_ACCESS_TOKEN=your_whatsapp_access_token
       - WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
@@ -85,7 +142,7 @@ services:
       - SMTP_USERNAME=your_email@gmail.com
       - SMTP_PASSWORD=your_app_password
     ports:
-      - "3003:3003"
+      - '3003:3003'
     depends_on:
       - postgres
       - core-crm
@@ -94,9 +151,9 @@ services:
       - crm-network
     volumes:
       - ./notification-service/logs:/app/logs
-      - ./notification-service/sessions:/app/sessions  # For Telegram user sessions (V1 Legacy)
-      - telegram_sessions:/app/telegram-sessions  # For persistent MTProto sessions (V1 Legacy)
-      - telegram_sessions_v2:/app/telegram-sessions-v2  # For persistent GramJS sessions (V2 Current)
+      - ./notification-service/sessions:/app/sessions # For Telegram user sessions (V1 Legacy)
+      - telegram_sessions:/app/telegram-sessions # For persistent MTProto sessions (V1 Legacy)
+      - telegram_sessions_v2:/app/telegram-sessions-v2 # For persistent GramJS sessions (V2 Current)
 
   # Identity Service (NestJS) - Auth0, OAuth2, 2FA
   identity-service:
@@ -121,7 +178,7 @@ services:
       - AUTH0_CLIENT_SECRET=your_auth0_client_secret
       - REDIS_URL=redis://redis:6379
     ports:
-      - "3002:3002"
+      - '3002:3002'
     depends_on:
       - postgres
       - redis
@@ -140,7 +197,7 @@ services:
       - NEXT_PUBLIC_MESSAGING_API_URL=http://localhost:3003/api/v1
       - NODE_ENV=development
     ports:
-      - "3000:3000"
+      - '3000:3000'
     depends_on:
       - core-crm
       - notification-service
@@ -163,7 +220,7 @@ services:
       - FRONTEND_URL=http://frontend:3000
       - JWT_SECRET=dev_jwt_secret_key_unified_for_all_services_32_chars
     ports:
-      - "3001:3001"
+      - '3001:3001'
     depends_on:
       - core-crm
       - notification-service
@@ -177,5 +234,5 @@ networks:
 volumes:
   postgres_data:
   redis_data:
-  telegram_sessions:      # V1 Legacy MTProto sessions
-  telegram_sessions_v2:   # V2 Current GramJS sessions
+  telegram_sessions: # V1 Legacy MTProto sessions
+  telegram_sessions_v2: # V2 Current GramJS sessions

@@ -1,6 +1,10 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 class Settings(BaseSettings):
     # Основные настройки
@@ -8,24 +12,24 @@ class Settings(BaseSettings):
     PORT: int = 8000
     DEBUG: bool = False
     
-    # Безопасность
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    # Безопасность - читаем из .env
+    SECRET_KEY: str = "your-secret-key-change-in-production"  # Will be overridden by .env
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
-    # База данных PostgreSQL
+    # База данных PostgreSQL - читаем из .env
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "1234"
+    POSTGRES_PASSWORD: str = "password"  # Will be overridden by .env
     POSTGRES_DB: str = "kwork_service"
-    DATABASE_URL: str = "postgresql://postgres:1234@localhost:5432/kwork_service"
-
+    DATABASE_URL: Optional[str] = None  # Will be constructed or read from .env
+    
     # Redis для кеширования и сессий
     REDIS_URL: str = "redis://localhost:6379"
     
     # Интеграция с основной CRM
-    CRM_API_URL: str = "http://localhost:8080"
+    CRM_API_URL: str = "http://localhost:8080/api/v1"
     CRM_API_KEY: Optional[str] = None
     
     # API Gateway для аутентификации
@@ -35,7 +39,7 @@ class Settings(BaseSettings):
     KWORK_BASE_URL: str = "https://kwork.ru"
     KWORK_API_URL: str = "https://kwork.ru/api"
     
-    # Тестовые учетные данные Kwork (должны быть в .env файле)
+    # Kwork учетные данные - ОБЯЗАТЕЛЬНО из .env
     KWORK_TEST_USERNAME: Optional[str] = None
     KWORK_TEST_PASSWORD: Optional[str] = None
     
@@ -58,8 +62,17 @@ class Settings(BaseSettings):
     TENANT_ID_HEADER: str = "X-Tenant-ID"
     DEFAULT_TENANT_ID: str = "default"
     
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        # Construct DATABASE_URL if not provided
+        if not self.DATABASE_URL:
+            self.DATABASE_URL = f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # This allows environment variables to override default values
+        case_sensitive = False
 
 settings = Settings()
