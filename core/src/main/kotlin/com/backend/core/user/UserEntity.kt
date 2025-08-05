@@ -4,9 +4,6 @@ import com.fasterxml.jackson.annotation.JsonIgnore
 import jakarta.persistence.*
 import org.hibernate.annotations.CreationTimestamp
 import org.hibernate.annotations.UpdateTimestamp
-import org.springframework.security.core.GrantedAuthority
-import org.springframework.security.core.authority.SimpleGrantedAuthority
-import org.springframework.security.core.userdetails.UserDetails
 import java.time.LocalDateTime
 import java.util.*
 
@@ -23,9 +20,9 @@ data class UserEntity(
     @Column(unique = true)
     val displayName: String? = null,
 
-    @JsonIgnore
-    @Column(name = "hashed_password", nullable = false)
-    val hashedPassword: String,
+    // Remove hashedPassword - handled by identity service
+    // @Column(name = "hashed_password", nullable = false)
+    // val hashedPassword: String,
 
     @Column(name = "first_name")
     val firstName: String? = null,
@@ -75,33 +72,7 @@ data class UserEntity(
     @Column(name = "role")
     val role: UserRole = UserRole.MANAGER,
 
-    // 2FA fields
-    @Column(name = "two_factor_enabled")
-    val twoFactorEnabled: Boolean = false,
-
-    @JsonIgnore
-    @Column(name = "two_factor_secret")
-    val twoFactorSecret: String? = null,
-
-    @JsonIgnore
-    @Column(name = "backup_codes", columnDefinition = "TEXT")
-    val backupCodes: String? = null, // JSON array of backup codes
-
-    @Column(name = "two_factor_verified_at")
-    val twoFactorVerifiedAt: LocalDateTime? = null,
-
-    // Security fields
-    @JsonIgnore
-    @Column(name = "failed_login_attempts")
-    val failedLoginAttempts: Int = 0,
-
-    @JsonIgnore
-    @Column(name = "locked_until")
-    val lockedUntil: LocalDateTime? = null,
-
-    @Column(name = "last_login")
-    val lastLogin: LocalDateTime? = null,
-
+    // Keep basic timestamps
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     val createdAt: LocalDateTime = LocalDateTime.now(),
@@ -109,44 +80,7 @@ data class UserEntity(
     @UpdateTimestamp
     @Column(name = "updated_at")
     val updatedAt: LocalDateTime = LocalDateTime.now()
-) : UserDetails {
-
+) {
     val fullName: String
         get() = "${firstName ?: ""} ${lastName ?: ""}".trim()
-
-    @JsonIgnore
-    override fun getAuthorities(): MutableCollection<out GrantedAuthority> {
-        val authorities = mutableListOf<GrantedAuthority>()
-        authorities.add(SimpleGrantedAuthority("ROLE_USER"))
-        
-        // Добавляем роль из enum
-        authorities.add(SimpleGrantedAuthority("ROLE_${role.name}"))
-        
-        // Сохраняем обратную совместимость с isSuperuser
-        if (isSuperuser || role == UserRole.ADMIN) {
-            authorities.add(SimpleGrantedAuthority("ROLE_ADMIN"))
-        }
-        
-        return authorities
-    }
-
-    @JsonIgnore
-    override fun getPassword(): String = hashedPassword
-
-    @JsonIgnore
-    override fun getUsername(): String = email
-
-    @JsonIgnore
-    override fun isAccountNonExpired(): Boolean = true
-
-    @JsonIgnore
-    override fun isAccountNonLocked(): Boolean {
-        return lockedUntil?.isBefore(LocalDateTime.now()) != false
-    }
-
-    @JsonIgnore
-    override fun isCredentialsNonExpired(): Boolean = true
-
-    @JsonIgnore
-    override fun isEnabled(): Boolean = isActive && isVerified
 }

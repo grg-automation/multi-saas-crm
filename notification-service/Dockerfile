@@ -1,26 +1,18 @@
-# Multi-stage build for NestJS application
+# Build stage
 FROM node:20-alpine AS build
 
-# Set working directory
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-
-# Install dependencies
-RUN npm ci --only=production && npm cache clean --force
-
-# Copy source code
+RUN apk add --no-cache python3 make g++
+RUN npm ci
 COPY . .
-
-# Build the application
 RUN npm run build
 
 # Runtime stage
 FROM node:20-alpine
 
-# Install curl for health checks
-RUN apk add --no-cache curl
+# Install curl and python3 for node-gyp builds
+RUN apk add --no-cache curl python3 make g++
 
 # Create app directory
 WORKDIR /app
