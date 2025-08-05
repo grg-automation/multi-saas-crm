@@ -71,7 +71,6 @@ export class UserService {
     const userData: Partial<User> = {
       // Fix: Use Partial<User> type
       email: createUserDto.email.toLowerCase(),
-      username: createUserDto.username,
       hashedPassword,
       firstName: createUserDto.firstName,
       lastName: createUserDto.lastName,
@@ -91,7 +90,7 @@ export class UserService {
       marketingNotifications: createUserDto.marketingNotifications ?? false,
       // Status fields
       isActive: authDto.isActive ?? true,
-      isVerified: authDto.isVerified ?? (!authDto.auth0Id), // Regular users verified by default, Auth0 users pre-verified based on isVerified field
+      isVerified: authDto.isVerified ?? !authDto.auth0Id, // Regular users verified by default, Auth0 users pre-verified based on isVerified field
       isSuperuser: false,
       // 2FA fields
       twoFactorEnabled: false,

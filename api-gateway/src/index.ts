@@ -10,7 +10,6 @@ import { loggingMiddleware } from './middleware/logging'
 import { healthCheck } from './routes/health'
 import { serviceRegistry } from './services/serviceRegistry'
 import { logger } from './utils/logger'
-// 🔥 ADD THIS IMPORT
 import kworkRoutes from './routes/kwork'
 
 const app = express()
@@ -58,7 +57,6 @@ app.use(loggingMiddleware)
 app.use('/health', healthCheck)
 
 // ===== KWORK SERVICE ROUTES =====
-// 🔥 ADD KWORK ROUTES - Add authentication middleware for protected endpoints
 app.use('/api/v1/kwork', authMiddleware, kworkRoutes)
 
 // ===== AUTHENTICATION ROUTES (Identity Service) =====
@@ -74,6 +72,16 @@ app.use(
 		onError: (err, req, res) => {
 			logger.error('Auth service proxy error:', err)
 			res.status(503).json({ error: 'Auth service unavailable' })
+		},
+
+		onProxyReq: (proxyReq, req, res) => {
+			if (req.body) {
+				const bodyData = JSON.stringify(req.body)
+				proxyReq.setHeader('Content-Type', 'application/json')
+				proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData))
+				proxyReq.write(bodyData)
+				proxyReq.end()
+			}
 		},
 	})
 )
@@ -300,6 +308,23 @@ app.use(
 		onError: (err, req, res) => {
 			logger.error('Inbox service proxy error:', err)
 			res.status(503).json({ error: 'Inbox service unavailable' })
+		},
+	})
+)
+
+// Manager routes (from notification service)
+app.use(
+	'/api/v1/manager',
+	authMiddleware,
+	createProxyMiddleware({
+		target: serviceRegistry.getService('notifications').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/api/v1/manager': '/api/v1/manager',
+		},
+		onError: (err, req, res) => {
+			logger.error('Manager service proxy error:', err)
+			res.status(503).json({ error: 'Manager service unavailable' })
 		},
 	})
 )

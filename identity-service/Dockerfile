@@ -12,6 +12,8 @@ RUN npm ci --only=production
 # Copy source code
 COPY . .
 
+RUN npm install -g @nestjs/cli
+
 # Build the application
 RUN npm run build
 
