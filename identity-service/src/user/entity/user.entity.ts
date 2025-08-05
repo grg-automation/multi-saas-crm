@@ -15,12 +15,12 @@ export class User {
   @Column({ unique: true, nullable: false })
   email: string;
 
-  @Column({ unique: true, nullable: true })
-  username?: string;
+  @Column({ name: 'display_name', nullable: true, unique: true })
+  displayName?: string;
 
   @Exclude()
-  @Column({ name: 'hashed_password', nullable: true })
-  hashedPassword?: string;
+  @Column({ name: 'hashed_password', nullable: false })
+  hashedPassword: string;
 
   @Column({ name: 'first_name', nullable: true })
   firstName?: string;
@@ -89,7 +89,7 @@ export class User {
 
   @Exclude()
   @Column({ name: 'backup_codes', type: 'text', nullable: true })
-  backupCodes?: string; // JSON array of backup codes
+  backupCodes?: string;
 
   @Column({ name: 'two_factor_verified_at', type: 'timestamp', nullable: true })
   twoFactorVerifiedAt?: Date;
@@ -106,7 +106,7 @@ export class User {
   @Column({ name: 'last_login', type: 'timestamp', nullable: true })
   lastLogin?: Date;
 
-  // Auth0 Integration
+  // Auth0 Integration (nullable for flexibility)
   @Column({ name: 'auth0_id', nullable: true, unique: true })
   auth0Id?: string;
 
@@ -117,7 +117,7 @@ export class User {
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 
-  // Virtual properties (similar to Kotlin)
+  // Virtual properties
   get fullName(): string {
     return `${this.firstName || ''} ${this.lastName || ''}`.trim();
   }
@@ -133,6 +133,9 @@ export class User {
 
   get authorities(): string[] {
     const authorities = ['ROLE_USER'];
+    if (this.role) {
+      authorities.push(`ROLE_${this.role.toUpperCase()}`);
+    }
     if (this.isSuperuser) {
       authorities.push('ROLE_ADMIN');
     }
