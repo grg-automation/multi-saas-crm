@@ -10,6 +10,7 @@ import { loggingMiddleware } from './middleware/logging'
 import { healthCheck } from './routes/health'
 import { serviceRegistry } from './services/serviceRegistry'
 import { logger } from './utils/logger'
+import kworkRoutes from './routes/kwork'
 
 const app = express()
 
@@ -55,6 +56,9 @@ app.use(loggingMiddleware)
 // Health check endpoint
 app.use('/health', healthCheck)
 
+// ===== KWORK SERVICE ROUTES =====
+app.use('/api/v1/kwork', authMiddleware, kworkRoutes)
+
 // ===== AUTHENTICATION ROUTES (Identity Service) =====
 // Public auth routes - no auth middleware needed
 app.use(
@@ -69,6 +73,7 @@ app.use(
 			logger.error('Auth service proxy error:', err)
 			res.status(503).json({ error: 'Auth service unavailable' })
 		},
+
 		onProxyReq: (proxyReq, req, res) => {
 			if (req.body) {
 				const bodyData = JSON.stringify(req.body)

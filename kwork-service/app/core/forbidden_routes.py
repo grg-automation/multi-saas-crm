@@ -1,0 +1,25 @@
+# Запрещенные маршруты для защиты от доступа к чувствительным разделам Kwork
+FORBIDDEN_ROUTES = [
+    "/settings",
+    "/payment",
+    "/finance", 
+    "/balance",
+    "/login-history",
+    "/api/v1/settings",
+    "/api/v1/payment",
+    "/api/v1/finance",
+    "/api/v1/balance",
+    "/api/v1/login-history",
+    "/profile/settings",
+    "/profile/payment",
+    "/profile/finance",
+    "/profile/balance",
+    "/account/settings",
+    "/account/payment",
+    "/account/finance",
+    "/account/balance",
+    "/user/settings",
+    "/user/payment",
+    "/user/finance",
+    "/user/balance"
+]
