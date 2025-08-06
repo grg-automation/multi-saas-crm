@@ -1,576 +1,500 @@
 'use client'
-
-import { useState, useEffect, useRef } from 'react'
-import { useRouter, useParams } from 'next/navigation'
-import { io, Socket } from 'socket.io-client'
-import { ArrowLeft, Send, MessageCircle, Clock, Upload, Download } from 'lucide-react'
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { messagingApi } from '@/lib/messaging-api'
+import { ArrowLeft, MessageCircle, Send, Settings, User } from 'lucide-react'
+import { useParams, useRouter } from 'next/navigation'
+import { useEffect, useRef, useState } from 'react'
+import io from 'socket.io-client'
+
+interface ChatInfo {
+	title: string
+	contact: string
+	channel: 'telegram'
+	status: string
+}
+
+interface Message {
+	id: string
+	threadId: string
+	content: string
+	senderId: string
+	senderName: string
+	timestamp: string
+	direction: 'inbound' | 'outbound'
+}
 
 export default function ManagerChatPage() {
-  const router = useRouter()
-  const params = useParams()
-  const threadId = params.threadId as string
-  
-  const [messages, setMessages] = useState<any[]>([])
-  const [newMessage, setNewMessage] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [chatInfo, setChatInfo] = useState<any>(null)
-  const [sending, setSending] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const socketRef = useRef<Socket | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+	const router = useRouter()
+	const params = useParams()
+	const threadId = params.threadId as string
+	const [loading, setLoading] = useState(true)
+	const [chatInfo, setChatInfo] = useState<ChatInfo | null>(null)
+	const [error, setError] = useState<string | null>(null)
+	const [socketConnected, setSocketConnected] = useState(false)
+	const [messages, setMessages] = useState<Message[]>([])
+	const [newMessage, setNewMessage] = useState('')
+	const [sending, setSending] = useState(false)
 
-  // Получаем информацию о чате и сообщения
-  useEffect(() => {
-    if (threadId) {
-      fetchChatData()
-      setupWebSocket()
-    }
+	// Testing controls
+	const [currentUserId, setCurrentUserId] = useState('manager_1')
+	const [showTestControls, setShowTestControls] = useState(false)
+	const [testMessage, setTestMessage] = useState('')
+	const [testUserId, setTestUserId] = useState('user456')
 
-    // Cleanup WebSocket connection
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect()
-        socketRef.current = null
-      }
-    }
-  }, [threadId])
+	const socketRef = useRef<any>(null)
+	const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  const setupWebSocket = () => {
-    try {
-      const userData = localStorage.getItem('user')
-      const user = userData ? JSON.parse(userData) : null
+	useEffect(() => {
+		if (threadId) {
+			fetchChatData()
+			initializeWebSocket()
+		}
 
-      if (!user) {
-        console.error('No user data found for WebSocket connection')
-        return
-      }
+		return () => {
+			if (socketRef.current) {
+				console.log('🔌 Disconnecting WebSocket on cleanup')
+				socketRef.current.disconnect()
+			}
+		}
+	}, [threadId])
 
-      // Подключаемся к WebSocket
-      socketRef.current = io('http://localhost:3003', {
-        timeout: 20000,
-        transports: ['websocket', 'polling']
-      })
+	useEffect(() => {
+		scrollToBottom()
+	}, [messages])
 
-      socketRef.current.on('connect', () => {
-        console.log('WebSocket connected for manager chat')
-        
-        // Подписываемся на обновления для этого чата
-        const sessionId = 'tg_user_1754039348073_xnqhblt8r' // Это должно браться из конфигурации
-        const chatId = threadId.replace('telegram_thread_', '') // Извлекаем чистый chat ID
-        socketRef.current?.emit('subscribe_to_session', {
-          sessionId: sessionId,
-          userId: user.id,
-          userRole: 'MANAGER',
-          assignedChatIds: [chatId] // Передаем чистые chat ID без префикса
-        })
-      })
+	const scrollToBottom = () => {
+		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+	}
 
-      socketRef.current.on('subscription_confirmed', (data) => {
-        console.log('WebSocket subscription confirmed:', data)
-      })
+	const fetchChatData = async () => {
+		try {
+			setLoading(true)
+			setError(null)
 
-      socketRef.current.on('telegram_update', (update) => {
-        console.log('Received Telegram update:', update)
-        console.log('🔍 Update data structure:', {
-          type: update.type,
-          chatId: update.chatId,
-          data: update.data,
-          hasMedia: !!update.data?.media,
-          mediaType: update.data?.media?.type,
-          text: update.data?.text,
-          message: update.data?.message
-        })
-        
-        if (update.type === 'new_message' && update.chatId === threadId.replace('telegram_thread_', '')) {
-          // Правильно обрабатываем новое сообщение с файлами
-          const detectMessageType = (updateData: any) => {
-            if (updateData.media) {
-              if (updateData.media.photo || updateData.media.type === 'MessageMediaPhoto') return 'image'
-              if (updateData.media.document || updateData.media.type === 'MessageMediaDocument') return 'file'
-            }
-            return 'text'
-          }
+			console.log('🔍 Fetching thread data for threadId:', threadId)
 
-          const processFileContent = (updateData: any, messageType: string) => {
-            let content = updateData.text || updateData.message || ''
-            
-            if (messageType === 'file' && updateData.media?.document) {
-              const document = updateData.media.document
-              let fileName = 'Документ'
-              
-              // Извлекаем имя файла из атрибутов
-              if (document.attributes) {
-                for (const attr of document.attributes) {
-                  if (attr.fileName || (attr.className && attr.className.includes('DocumentAttributeFilename'))) {
-                    fileName = attr.fileName || attr.file_name || fileName
-                    break
-                  }
-                }
-              }
-              
-              // Если не нашли в атрибутах, используем content как fallback
-              if (fileName === 'Документ' && content) {
-                fileName = content
-              }
-              
-              // Определяем иконку по MIME типу
-              const mimeType = document.mimeType || document.mime_type || ''
-              let icon = '📄'
-              if (mimeType.startsWith('image/')) {
-                icon = '🖼️'
-              } else if (mimeType.startsWith('video/')) {
-                icon = '🎥'
-              } else if (mimeType.startsWith('audio/')) {
-                icon = '🎧'
-              }
-              
-              return `${icon} ${fileName}`
-            } else if (messageType === 'image') {
-              return content ? `🖼️ Изображение\n${content}` : '🖼️ Изображение'
-            } else if (!content && updateData.media) {
-              return '[Медиа файл]'
-            }
-            
-            return content
-          }
+			// Try to get thread data
+			const threadData = await messagingApi.getThread(threadId)
+			console.log('✅ Thread data received:', threadData)
 
-          const messageType = detectMessageType(update.data)
-          const processedContent = processFileContent(update.data, messageType)
+			setChatInfo({
+				title:
+					threadData.contact?.fullName ||
+					threadData.contact?.name ||
+					`User ${threadId.slice(-3)}`,
+				contact:
+					threadData.contact?.phone ||
+					threadData.contact?.telegramId ||
+					threadData.contact?.username ||
+					'Contact',
+				channel: 'telegram',
+				status: threadData.status || 'OPEN',
+			})
 
-          const newMsg = {
-            id: update.data.messageId?.toString() || Date.now().toString(),
-            content: processedContent,
-            timestamp: update.data.date || new Date().toISOString(),
-            sender: update.data.isOutgoing || update.data.fromManager ? 'Менеджер' : 'Контакт',
-            isFromManager: update.data.isOutgoing || update.data.fromManager || false,
-            messageType: messageType
-          }
-          
-          // Проверяем, нет ли уже сообщения с таким ID (избегаем дубликатов)
-          setMessages(prev => {
-            const exists = prev.some(msg => msg.id === newMsg.id)
-            if (exists) {
-              console.log('Message already exists, skipping:', newMsg.id)
-              return prev
-            }
-            console.log('Adding new message with type:', messageType, 'content:', processedContent)
-            return [...prev, newMsg]
-          })
-        }
-      })
+			// Try to get messages
+			await fetchMessages()
+		} catch (error) {
+			console.error('❌ Error fetching chat data:', error)
 
-      socketRef.current.on('disconnect', () => {
-        console.log('WebSocket disconnected')
-      })
+			let errorMessage = 'Failed to load chat information'
+			if (error.code === 'ECONNREFUSED') {
+				errorMessage =
+					'Cannot connect to messaging service (port 3000). Is it running?'
+			} else if (error.response?.status === 404) {
+				errorMessage = `Thread ${threadId} not found`
+			}
 
-      socketRef.current.on('error', (error) => {
-        console.error('WebSocket error:', error)
-      })
+			setError(errorMessage)
 
-    } catch (error) {
-      console.error('Failed to setup WebSocket:', error)
-    }
-  }
+			// Fallback for development
+			setChatInfo({
+				title: `User ${threadId.slice(-3)}`,
+				contact: 'Development Mode',
+				channel: 'telegram',
+				status: 'OPEN',
+			})
+		} finally {
+			setLoading(false)
+		}
+	}
 
-  const fetchChatData = async () => {
-    try {
-      setLoading(true)
-      const token = localStorage.getItem('token')
-      
-      // 1. Получаем анонимизированную информацию о чате
-      const chatResponse = await fetch(`http://localhost:3003/api/v1/manager/chat/${threadId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      })
-      
-      if (chatResponse.ok) {
-        const chatData = await chatResponse.json()
-        setChatInfo(chatData.data)
-      }
+	const fetchMessages = async () => {
+		try {
+			console.log('📬 Fetching messages for thread:', threadId)
 
-      // 2. Получаем сообщения (анонимизированные) - загружаем больше сообщений
-      const messagesResponse = await fetch(`http://localhost:3003/api/v1/manager/chat/${threadId}/messages?limit=200`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      })
-      
-      if (messagesResponse.ok) {
-        const messagesData = await messagesResponse.json()
-        const anonymizedMessages = messagesData.data?.map((msg: any) => ({
-          id: msg.id,
-          content: msg.content,
-          timestamp: msg.timestamp,
-          sender: msg.sender,
-          isFromManager: msg.isFromManager,
-          messageType: msg.messageType
-        })) || []
-        
-        // Сортируем сообщения по времени (старые сверху, новые снизу)
-        const sortedMessages = anonymizedMessages.sort((a, b) => 
-          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        )
-        
-        setMessages(sortedMessages)
-      }
-      
-    } catch (error) {
-      console.error('Error fetching chat data:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
+			// Try to get messages from your API
+			const response = await fetch(
+				`http://localhost:3000/api/threads/${threadId}/messages`
+			)
 
-  const sendMessage = async () => {
-    if (!newMessage.trim() || sending) return
-    
-    try {
-      setSending(true)
-      const token = localStorage.getItem('token')
-      const userData = localStorage.getItem('user')
-      const managerId = userData ? JSON.parse(userData).id : undefined
-      
-      // Отправляем сообщение через новое API
-      const response = await fetch(`http://localhost:3003/api/v1/manager/chat/${threadId}/send`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          content: newMessage,
-          messageType: 'text',
-          managerId: managerId
-        })
-      })
-      
-      if (response.ok) {
-        const result = await response.json()
-        
-        // Добавляем сообщение локально (WebSocket может дублировать, но мы проверим)
-        const newMsg = {
-          id: result.data.messageId,
-          content: newMessage,
-          timestamp: result.data.sentAt,
-          sender: 'Менеджер',
-          isFromManager: true,
-          messageType: 'text'
-        }
-        
-        setMessages(prev => {
-          const exists = prev.some(msg => msg.id === newMsg.id)
-          if (exists) {
-            console.log('Sent message already exists, skipping:', newMsg.id)
-            return prev
-          }
-          return [...prev, newMsg]
-        })
-        setNewMessage('')
-      } else {
-        console.error('Failed to send message')
-      }
-      
-    } catch (error) {
-      console.error('Error sending message:', error)
-    } finally {
-      setSending(false)
-    }
-  }
+			if (response.ok) {
+				const messagesData = await response.json()
+				console.log('📨 Messages received:', messagesData)
+				// Ensure we always set an array
+				setMessages(Array.isArray(messagesData) ? messagesData : [])
+			} else {
+				console.log('⚠️ No messages found or API not available')
+				setMessages([])
+			}
+		} catch (error) {
+			console.error('❌ Error fetching messages:', error)
+			setMessages([])
+		}
+	}
 
-  const sendFile = async (file: File) => {
-    if (!file || uploading) return
-    
-    try {
-      setUploading(true)
-      const token = localStorage.getItem('token')
-      const userData = localStorage.getItem('user')
-      const managerId = userData ? JSON.parse(userData).id : undefined
+	const initializeWebSocket = () => {
+		console.log('🔌 Initializing WebSocket connection to localhost:3000')
 
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('managerId', managerId || '')
+		const socket = io('http://localhost:3000', {
+			transports: ['websocket'],
+			path: '/socket.io',
+			reconnection: true,
+			reconnectionAttempts: 10,
+			reconnectionDelay: 1000,
+			timeout: 20000,
+		})
 
-      const response = await fetch(`http://localhost:3003/api/v1/manager/chat/${threadId}/send-file`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-        body: formData
-      })
+		socketRef.current = socket
 
-      if (response.ok) {
-        const result = await response.json()
-        
-        // Добавляем файл локально (WebSocket может дублировать, но мы проверим)
-        const newMsg = {
-          id: result.data.messageId,
-          content: `📎 ${file.name}`,
-          timestamp: result.data.sentAt,
-          sender: 'Менеджер',
-          isFromManager: true,
-          messageType: 'file'
-        }
-        
-        setMessages(prev => {
-          const exists = prev.some(msg => msg.id === newMsg.id)
-          if (exists) {
-            console.log('Sent file already exists, skipping:', newMsg.id)
-            return prev
-          }
-          return [...prev, newMsg]
-        })
-      } else {
-        console.error('Failed to send file')
-      }
-      
-    } catch (error) {
-      console.error('Error sending file:', error)
-    } finally {
-      setUploading(false)
-    }
-  }
+		socket.on('connect', () => {
+			console.log('✅ Connected to WebSocket, socket ID:', socket.id)
+			setSocketConnected(true)
+			socket.emit('subscribe', 'tenant_default')
+			socket.emit('join_thread', threadId)
+		})
 
-  const handleDownloadFile = async (messageId: string, fileName?: string) => {
-    try {
-      console.log(`📥 Starting download for message: ${messageId}`);
-      
-      // Извлекаем chatId из threadId для Telegram
-      let chatId: string | undefined;
-      if (threadId && threadId.startsWith('telegram_thread_')) {
-        // threadId имеет формат telegram_thread_925339638
-        const match = threadId.match(/telegram_thread_(\d+)/);
-        if (match) {
-          chatId = match[1];
-          console.log(`📥 Extracted chatId: ${chatId} from threadId: ${threadId}`);
-        }
-      }
+		socket.on('subscribed', data => {
+			console.log('✅ Subscribed to session:', data.sessionId)
+		})
 
-      if (!chatId) {
-        throw new Error('Cannot determine chatId for file download');
-      }
-      
-      // Импортируем функцию скачивания
-      const { downloadTelegramFile } = await import('@/lib/telegram-inbox-api');
-      
-      // Скачиваем файл
-      const fileData = await downloadTelegramFile(messageId, chatId);
-      
-      // Создаем Blob из base64 данных
-      const binaryString = atob(fileData.data);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      
-      const blob = new Blob([bytes], { type: fileData.contentType });
-      
-      // Создаем ссылку для скачивания
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fileName || fileData.fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      
-      console.log(`✅ File downloaded: ${fileData.fileName}`);
-    } catch (error) {
-      console.error('Failed to download file:', error);
-      alert(`Ошибка скачивания: ${error.message}`);
-    }
-  }
+		socket.on('new_message', data => {
+			console.log('📨 New message received via WebSocket:', data)
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (file) {
-      sendFile(file)
-    }
-    // Очищаем input для повторной загрузки того же файла
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-    }
-  }
+			// Check if the message belongs to current thread
+			if (data.threadId === threadId) {
+				const newMsg: Message = {
+					id: data.id || Date.now().toString(),
+					threadId: data.threadId,
+					content: data.content || data.message,
+					senderId: data.senderId || data.from,
+					senderName: data.senderName || data.fromName || data.senderId,
+					timestamp: data.timestamp || new Date().toISOString(),
+					direction: data.senderId === currentUserId ? 'outbound' : 'inbound',
+				}
 
-  const formatTime = (timestamp: string) => {
-    const date = new Date(timestamp)
-    return date.toLocaleTimeString('ru-RU', { 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    })
-  }
+				setMessages(prev => {
+					// Avoid duplicates
+					const exists = prev.some(msg => msg.id === newMsg.id)
+					if (exists) return prev
+					return [...prev, newMsg]
+				})
+			}
+		})
 
-  if (loading) {
-    return (
-      <AuthenticatedLayout>
-        <div className="p-6">
-          <div className="flex items-center justify-center h-64">
-            <div className="text-center">
-              <MessageCircle className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-              <p className="text-gray-500">Загрузка чата...</p>
-            </div>
-          </div>
-        </div>
-      </AuthenticatedLayout>
-    )
-  }
+		socket.on('message_sent', data => {
+			console.log('✅ Message sent confirmation:', data)
+			setSending(false)
+		})
 
-  return (
-    <AuthenticatedLayout>
-      <div className="p-6 max-w-4xl mx-auto">
-        {/* Заголовок чата */}
-        <div className="flex items-center gap-4 mb-6">
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            onClick={() => router.back()}
-            className="flex items-center gap-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Назад к чатам
-          </Button>
-          
-          <div className="flex-1">
-            <h1 className="text-2xl font-bold">{chatInfo?.title}</h1>
-            <div className="flex items-center gap-4 text-sm text-gray-600 mt-1">
-              <span>{chatInfo?.contact}</span>
-              <Badge variant="outline">{chatInfo?.channel}</Badge>
-              <Badge variant="secondary">{chatInfo?.status}</Badge>
-            </div>
-          </div>
-        </div>
+		socket.on('disconnect', reason => {
+			console.log('❌ WebSocket disconnected:', reason)
+			setSocketConnected(false)
+		})
 
-        {/* Область сообщений */}
-        <Card className="mb-4">
-          <CardContent className="p-0">
-            <div className="h-96 overflow-y-auto p-4 space-y-4">
-              {messages.length === 0 ? (
-                <div className="text-center text-gray-500 py-8">
-                  <MessageCircle className="h-8 w-8 mx-auto mb-2 text-gray-400" />
-                  <p>Пока нет сообщений в этом чате</p>
-                </div>
-              ) : (
-                messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex ${message.isFromManager ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div
-                      className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg relative group ${
-                        message.isFromManager
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-gray-100 text-gray-900'
-                      }`}
-                    >
-                      {/* Контент сообщения */}
-                      <div className="flex items-start justify-between">
-                        <p className="text-sm flex-1">{message.content}</p>
-                        
-                        {/* Кнопка скачивания для файлов */}
-                        {(message.messageType === 'file' || 
-                          message.messageType === 'image' ||
-                          message.content.includes('📎') || 
-                          message.content.includes('🖼️') || 
-                          message.content.includes('🎥') || 
-                          message.content.includes('🎧') || 
-                          message.content.includes('📄')) && (
-                          <button
-                            onClick={() => {
-                              const fileName = message.content.replace(/^📎\s*/, '').replace(/^🖼️\s*/, '').replace(/^🎥\s*/, '').replace(/^🎧\s*/, '').replace(/^📄\s*/, '')
-                              handleDownloadFile(message.id, fileName)
-                            }}
-                            className={`ml-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity ${
-                              message.isFromManager 
-                                ? 'bg-blue-600 hover:bg-blue-700 text-white' 
-                                : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
-                            }`}
-                            title="Скачать файл"
-                          >
-                            <Download className="h-3 w-3" />
-                          </button>
-                        )}
-                      </div>
-                      
-                      <div className="flex items-center justify-between mt-1">
-                        <span className={`text-xs ${
-                          message.isFromManager ? 'text-blue-100' : 'text-gray-500'
-                        }`}>
-                          {message.sender}
-                        </span>
-                        <span className={`text-xs ${
-                          message.isFromManager ? 'text-blue-100' : 'text-gray-500'
-                        }`}>
-                          {formatTime(message.timestamp)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </CardContent>
-        </Card>
+		socket.on('connect_error', error => {
+			console.error('❌ WebSocket connection error:', error.message)
+			setSocketConnected(false)
+		})
+	}
 
-        {/* Поле ввода сообщения */}
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex gap-2">
-              <Input
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-                placeholder="Напишите сообщение..."
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                disabled={sending || uploading}
-              />
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileSelect}
-                style={{ display: 'none' }}
-                accept="*/*"
-              />
-              <Button
-                variant="outline"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                title="Прикрепить файл"
-              >
-                {uploading ? (
-                  <Clock className="h-4 w-4" />
-                ) : (
-                  <Upload className="h-4 w-4" />
-                )}
-              </Button>
-              <Button 
-                onClick={sendMessage} 
-                disabled={!newMessage.trim() || sending || uploading}
-              >
-                {sending ? (
-                  <Clock className="h-4 w-4" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+	const sendMessage = async () => {
+		if (!newMessage.trim() || sending || !socketConnected) return
 
-        {/* Информация о конфиденциальности */}
-        <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <p className="text-sm text-yellow-800">
-            🔒 <strong>Конфиденциальность:</strong> Контакты анонимизированы в соответствии с политикой безопасности. 
-            Номера телефонов и персональные данные скрыты.
-          </p>
-        </div>
-      </div>
-    </AuthenticatedLayout>
-  )
+		setSending(true)
+
+		try {
+			const messageData = {
+				threadId: threadId,
+				content: newMessage.trim(),
+				senderId: currentUserId,
+				senderName: currentUserId === 'manager_1' ? 'Manager' : currentUserId,
+				timestamp: new Date().toISOString(),
+			}
+
+			console.log('📤 Sending message:', messageData)
+
+			// Send via WebSocket
+			socketRef.current?.emit('send_message', messageData)
+
+			// Also try to send via HTTP API as backup
+			try {
+				await fetch(`http://localhost:3000/api/threads/${threadId}/messages`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify(messageData),
+				})
+			} catch (apiError) {
+				console.log('⚠️ HTTP API not available, using WebSocket only')
+			}
+
+			// Add to local state immediately for better UX
+			const localMessage: Message = {
+				id: Date.now().toString(),
+				...messageData,
+				direction: 'outbound',
+			}
+
+			setMessages(prev => [...prev, localMessage])
+			setNewMessage('')
+		} catch (error) {
+			console.error('❌ Error sending message:', error)
+		} finally {
+			setSending(false)
+		}
+	}
+
+	const sendTestMessage = async () => {
+		if (!testMessage.trim() || !socketConnected) return
+
+		const messageData = {
+			threadId: threadId,
+			content: testMessage.trim(),
+			senderId: testUserId,
+			senderName: testUserId === 'user456' ? 'User 456' : testUserId,
+			timestamp: new Date().toISOString(),
+		}
+
+		console.log('🧪 Sending test message:', messageData)
+		socketRef.current?.emit('send_message', messageData)
+
+		setTestMessage('')
+	}
+
+	if (loading) {
+		return (
+			<AuthenticatedLayout>
+				<div className='p-6'>
+					<div className='flex items-center justify-center h-64'>
+						<div className='text-center'>
+							<MessageCircle className='h-8 w-8 text-gray-400 mx-auto mb-2 animate-pulse' />
+							<p className='text-gray-500'>Loading chat...</p>
+							<p className='text-xs text-gray-400 mt-1'>
+								Thread ID: {threadId}
+							</p>
+						</div>
+					</div>
+				</div>
+			</AuthenticatedLayout>
+		)
+	}
+
+	if (error) {
+		return (
+			<AuthenticatedLayout>
+				<div className='p-6'>
+					<div className='flex items-center justify-center h-64'>
+						<div className='text-center'>
+							<MessageCircle className='h-8 w-8 text-red-400 mx-auto mb-2' />
+							<p className='text-red-500 mb-2'>{error}</p>
+							<p className='text-xs text-gray-400 mb-4'>
+								Thread ID: {threadId}
+							</p>
+							<div className='space-x-2'>
+								<Button onClick={fetchChatData} variant='outline' size='sm'>
+									Retry Connection
+								</Button>
+								<Button onClick={() => router.back()} variant='ghost' size='sm'>
+									Go Back
+								</Button>
+							</div>
+						</div>
+					</div>
+				</div>
+			</AuthenticatedLayout>
+		)
+	}
+
+	return (
+		<AuthenticatedLayout>
+			<div className='flex flex-col h-screen'>
+				{/* Chat Header */}
+				<div className='flex items-center gap-4 p-4 border-b border-gray-200 bg-white'>
+					<Button
+						variant='ghost'
+						size='sm'
+						onClick={() => router.back()}
+						className='flex items-center gap-2'
+					>
+						<ArrowLeft className='h-4 w-4' />
+						Back to Chats
+					</Button>
+
+					<div className='flex items-center gap-3 flex-1'>
+						<div className='w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-lg'>
+							📱
+						</div>
+						<div className='flex-1'>
+							<h1 className='text-lg font-bold'>{chatInfo?.title}</h1>
+							<div className='flex items-center gap-3 text-sm text-gray-600'>
+								<span>{chatInfo?.contact}</span>
+								<Badge className='bg-blue-100 text-blue-800 text-xs'>
+									Telegram
+								</Badge>
+								<Badge variant='secondary' className='text-xs'>
+									{chatInfo?.status}
+								</Badge>
+								<div className='flex items-center gap-1'>
+									<div
+										className={`w-2 h-2 rounded-full ${socketConnected ? 'bg-green-500' : 'bg-red-500'}`}
+									></div>
+									<span className='text-xs'>
+										{socketConnected ? 'Connected' : 'Disconnected'}
+									</span>
+								</div>
+							</div>
+						</div>
+					</div>
+
+					{/* Test Controls Toggle */}
+					<Button
+						variant='outline'
+						size='sm'
+						onClick={() => setShowTestControls(!showTestControls)}
+						className='flex items-center gap-2'
+					>
+						<Settings className='h-4 w-4' />
+						Test
+					</Button>
+				</div>
+
+				{/* Test Controls Panel */}
+				{showTestControls && (
+					<div className='p-4 bg-gray-50 border-b border-gray-200'>
+						<div className='space-y-3'>
+							<div className='flex items-center gap-2 text-sm'>
+								<User className='h-4 w-4' />
+								<span>Current User:</span>
+								<select
+									value={currentUserId}
+									onChange={e => setCurrentUserId(e.target.value)}
+									className='px-2 py-1 border rounded text-sm'
+								>
+									<option value='manager_1'>Manager (manager_1)</option>
+									<option value='user456'>User 456</option>
+									<option value='admin'>Admin</option>
+								</select>
+							</div>
+
+							<div className='flex gap-2'>
+								<Input
+									placeholder='Test message from user456...'
+									value={testMessage}
+									onChange={e => setTestMessage(e.target.value)}
+									className='text-sm'
+									onKeyPress={e => e.key === 'Enter' && sendTestMessage()}
+								/>
+								<select
+									value={testUserId}
+									onChange={e => setTestUserId(e.target.value)}
+									className='px-2 py-1 border rounded text-sm'
+								>
+									<option value='user456'>user456</option>
+									<option value='manager_1'>manager_1</option>
+									<option value='admin'>admin</option>
+								</select>
+								<Button
+									size='sm'
+									onClick={sendTestMessage}
+									disabled={!testMessage.trim()}
+								>
+									Send Test
+								</Button>
+							</div>
+						</div>
+					</div>
+				)}
+
+				{/* Messages Area */}
+				<div className='flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50'>
+					{!Array.isArray(messages) || messages.length === 0 ? (
+						<div className='flex items-center justify-center h-full text-gray-500'>
+							<div className='text-center'>
+								<MessageCircle className='h-12 w-12 mx-auto mb-2 opacity-50' />
+								<p>No messages yet</p>
+								<p className='text-sm'>Start a conversation!</p>
+							</div>
+						</div>
+					) : (
+						messages.map(message => (
+							<div
+								key={message.id}
+								className={`flex ${message.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}
+							>
+								<div
+									className={`max-w-[70%] rounded-lg p-3 ${
+										message.direction === 'outbound'
+											? 'bg-blue-500 text-white'
+											: 'bg-white text-gray-900 shadow-sm'
+									}`}
+								>
+									<div className='flex items-center gap-2 mb-1'>
+										<span className='text-xs opacity-75 font-medium'>
+											{message.senderName}
+										</span>
+										<span className='text-xs opacity-50'>
+											{new Date(message.timestamp).toLocaleTimeString()}
+										</span>
+									</div>
+									<p>{message.content}</p>
+								</div>
+							</div>
+						))
+					)}
+					<div ref={messagesEndRef} />
+				</div>
+
+				{/* Message Input */}
+				<div className='p-4 border-t border-gray-200 bg-white'>
+					<div className='flex gap-2'>
+						<Input
+							placeholder='Введите сообщение...'
+							value={newMessage}
+							onChange={e => setNewMessage(e.target.value)}
+							onKeyPress={e =>
+								e.key === 'Enter' && !e.shiftKey && sendMessage()
+							}
+							disabled={!socketConnected}
+							className='flex-1'
+						/>
+						<Button
+							onClick={sendMessage}
+							disabled={!newMessage.trim() || sending || !socketConnected}
+							className='flex items-center gap-2'
+						>
+							<Send className='h-4 w-4' />
+							{sending ? 'Sending...' : 'Send'}
+						</Button>
+					</div>
+					{!socketConnected && (
+						<p className='text-sm text-red-500 mt-1'>
+							WebSocket disconnected - messages cannot be sent
+						</p>
+					)}
+				</div>
+
+				{/* Privacy Notice */}
+				<div className='p-3 bg-yellow-50 border-t border-yellow-200'>
+					<p className='text-sm text-yellow-800'>
+						🔒 <strong>Privacy:</strong> Telegram chats are anonymized per
+						security policy.
+					</p>
+				</div>
+			</div>
+		</AuthenticatedLayout>
+	)
 }

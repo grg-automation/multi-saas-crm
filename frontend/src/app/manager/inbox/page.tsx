@@ -1,6 +1,7 @@
 'use client'
 
-import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout' // ✅ RESTORED
+import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout'
+import { useCurrentUser } from '@/components/navigation/RoleBasedNavigation' // ✅ USE UPDATED HOOK
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -27,6 +28,7 @@ interface AnonymizedThread {
 
 export default function ManagerInboxPage() {
 	const router = useRouter()
+	const { user, loading: userLoading } = useCurrentUser() // ✅ USE UPDATED HOOK
 	const [threads, setThreads] = useState<AnonymizedThread[]>([])
 	const [searchQuery, setSearchQuery] = useState('')
 	const [statusFilter, setStatusFilter] = useState<
@@ -36,38 +38,27 @@ export default function ManagerInboxPage() {
 	const [selectedThread, setSelectedThread] = useState<string | null>(null)
 
 	useEffect(() => {
-		// Simplified auth check since AuthenticatedLayout handles the main auth
-		const token = localStorage.getItem('accessToken')
-		if (token) {
+		// ✅ WAIT FOR USER TO LOAD, THEN FETCH DATA
+		if (!userLoading && user) {
 			fetchThreads()
-		} else {
+		} else if (!userLoading && !user) {
+			// User is not authenticated, AuthenticatedLayout will handle redirect
 			setLoading(false)
 		}
-	}, [])
+	}, [user, userLoading])
 
 	const fetchThreads = async () => {
 		try {
 			setLoading(true)
 
-			const token = localStorage.getItem('accessToken')
-			if (!token) {
-				console.log('❌ MANAGER PAGE: No token available for API call')
+			if (!user) {
+				console.log('❌ MANAGER PAGE: No user available')
 				return
 			}
 
-			let user
-			try {
-				const payload = JSON.parse(atob(token.split('.')[1]))
-				user = {
-					id: payload.sub || payload.userId || payload.id,
-					role: payload.role,
-				}
-				console.log('👤 MANAGER PAGE: User from token:', user)
-			} catch (error) {
-				console.error(
-					'❌ MANAGER PAGE: Failed to parse user from token:',
-					error
-				)
+			const token = localStorage.getItem('accessToken')
+			if (!token) {
+				console.log('❌ MANAGER PAGE: No token available for API call')
 				return
 			}
 
@@ -77,19 +68,12 @@ export default function ManagerInboxPage() {
 			}
 
 			console.log('📡 MANAGER PAGE: Fetching assigned threads for manager...')
-
-			const managerId = user.id
-			if (!managerId) {
-				console.error('❌ MANAGER PAGE: Manager ID not found in token:', user)
-				return
-			}
-
-			console.log('🆔 MANAGER PAGE: Manager ID:', managerId)
+			console.log('🆔 MANAGER PAGE: Manager ID:', user.id)
 
 			try {
 				// 1. Get assigned thread IDs
 				const assignedResponse = await fetch(
-					`http://localhost:3001/api/v1/manager/assigned-thread-ids?managerId=${managerId}`,
+					`http://localhost:3001/api/v1/manager/assigned-thread-ids?managerId=${user.id}`,
 					{ headers }
 				)
 
@@ -235,7 +219,8 @@ export default function ManagerInboxPage() {
 		}
 	}
 
-	if (loading) {
+	// ✅ SHOW LOADING WHILE USER OR DATA IS LOADING
+	if (userLoading || loading) {
 		return (
 			<AuthenticatedLayout>
 				<div className='p-6'>

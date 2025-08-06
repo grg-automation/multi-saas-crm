@@ -1,5 +1,4 @@
 'use client'
-
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -13,61 +12,10 @@ export default function LoginPage() {
 	const [loading, setLoading] = useState(false)
 	const [error, setError] = useState('')
 	const [isCheckingAuth, setIsCheckingAuth] = useState(true)
-
-	// Проверяем, не аутентифицирован ли уже пользователь
-	useEffect(() => {
-		const checkAuth = async () => {
-			const token = localStorage.getItem('accessToken')
-			if (token) {
-				try {
-					const payload = JSON.parse(atob(token.split('.')[1]))
-					const role = payload.role
-
-					// Check if token is expired
-					if (payload.exp * 1000 < Date.now()) {
-						localStorage.removeItem('accessToken')
-						localStorage.removeItem('refreshToken')
-						setIsCheckingAuth(false)
-						return
-					}
-
-					switch (role) {
-						case 'ADMIN':
-							router.replace('/admin/chat-assignments') // Use replace instead of push
-							break
-						case 'MANAGER':
-							router.replace('/manager/inbox')
-							break
-						default:
-							router.replace('/dashboard')
-					}
-				} catch (error) {
-					console.error('Token parsing error:', error)
-					localStorage.removeItem('accessToken')
-					localStorage.removeItem('refreshToken')
-					setIsCheckingAuth(false)
-				}
-			} else {
-				setIsCheckingAuth(false)
-			}
-		}
-
-		checkAuth()
-	}, [router])
-
-	if (isCheckingAuth) {
-		return (
-			<div className='min-h-screen flex items-center justify-center'>
-				<div>Loading...</div>
-			</div>
-		)
-	}
-
 	const [loginData, setLoginData] = useState({
 		email: '',
 		password: '',
 	})
-
 	const [registerData, setRegisterData] = useState({
 		email: '',
 		password: '',
@@ -76,50 +24,78 @@ export default function LoginPage() {
 		lastName: '',
 	})
 
+	useEffect(() => {
+		const checkAuth = async () => {
+			await new Promise(resolve => setTimeout(resolve, 100)) // Allow storage to settle
+			const logoutInProgress =
+				localStorage.getItem('logoutInProgress') === 'true'
+			if (logoutInProgress) {
+				localStorage.removeItem('logoutInProgress') // Clear flag
+				setIsCheckingAuth(false)
+				return
+			}
+			const token = localStorage.getItem('accessToken')
+			if (token) {
+				try {
+					const payload = JSON.parse(atob(token.split('.')[1]))
+					if (payload.exp * 1000 < Date.now()) {
+						localStorage.removeItem('accessToken')
+						localStorage.removeItem('refreshToken')
+					} else {
+						const role = payload.role
+						switch (role) {
+							case 'ADMIN':
+								router.replace('/admin/chat-assignments')
+								return
+							case 'MANAGER':
+								router.replace('/manager/inbox')
+								return
+							default:
+								router.replace('/dashboard')
+								return
+						}
+					}
+				} catch (error) {
+					console.error('Token parsing error:', error)
+					localStorage.removeItem('accessToken')
+					localStorage.removeItem('refreshToken')
+				}
+			}
+			setIsCheckingAuth(false)
+		}
+		checkAuth()
+	}, [router])
+
 	const handleLogin = async (e: React.FormEvent) => {
 		e.preventDefault()
 		setLoading(true)
 		setError('')
 		try {
-			console.log('Sending login request at 05:18 PM +05 with:', loginData)
 			const response = await fetch(
 				`${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/login`,
 				{
 					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-					},
+					headers: { 'Content-Type': 'application/json' },
 					credentials: 'include',
 					body: JSON.stringify(loginData),
 				}
 			)
-			console.log('Response status at 05:18 PM +05:', response.status)
 			const responseData = await response.json()
-			console.log('Response data at 05:18 PM +05:', responseData)
 			if (response.ok) {
 				const { accessToken, refreshToken } = responseData.data
-				console.log('Tokens received at 05:18 PM +05:', {
-					accessToken,
-					refreshToken,
-				})
 				localStorage.setItem('accessToken', accessToken)
 				localStorage.setItem('refreshToken', refreshToken)
 				const payload = JSON.parse(atob(accessToken.split('.')[1]))
-				console.log('Decoded payload at 05:18 PM +05:', payload)
 				const role = payload.role
-				console.log(
-					'Redirecting to role-based route at 05:18 PM +05 for:',
-					role
-				)
 				switch (role) {
 					case 'ADMIN':
-						router.push('/admin/chat-assignments')
+						router.replace('/admin/chat-assignments')
 						break
 					case 'MANAGER':
-						router.push('/manager/inbox')
+						router.replace('/manager/inbox')
 						break
 					default:
-						router.push('/dashboard')
+						router.replace('/dashboard')
 				}
 			} else {
 				setError(
@@ -130,7 +106,7 @@ export default function LoginPage() {
 				)
 			}
 		} catch (err) {
-			console.error('Login error at 05:18 PM +05:', err)
+			console.error('Login error:', err)
 			setError('Server connection error')
 		} finally {
 			setLoading(false)
@@ -156,9 +132,7 @@ export default function LoginPage() {
 				`${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/register`,
 				{
 					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-					},
+					headers: { 'Content-Type': 'application/json' },
 					credentials: 'include',
 					body: JSON.stringify(registerData),
 				}
@@ -178,11 +152,19 @@ export default function LoginPage() {
 				)
 			}
 		} catch (err) {
-			console.error('Registration error at 05:18 PM +05:', err)
+			console.error('Registration error:', err)
 			setError('Server connection error')
 		} finally {
 			setLoading(false)
 		}
+	}
+
+	if (isCheckingAuth) {
+		return (
+			<div className='min-h-screen flex items-center justify-center'>
+				<div>Loading...</div>
+			</div>
+		)
 	}
 
 	return (
@@ -196,7 +178,6 @@ export default function LoginPage() {
 						CRM система управления
 					</p>
 				</div>
-
 				<Card>
 					<CardHeader>
 						<CardTitle className='text-center'>
@@ -217,7 +198,6 @@ export default function LoginPage() {
 								</details>
 							</div>
 						)}
-
 						{isLogin ? (
 							<form onSubmit={handleLogin} className='space-y-4'>
 								<div>
@@ -249,7 +229,6 @@ export default function LoginPage() {
 								<Button type='submit' className='w-full' disabled={loading}>
 									{loading ? 'Вход...' : 'Войти'}
 								</Button>
-
 								<div className='text-center'>
 									<Button
 										variant='link'
@@ -269,11 +248,11 @@ export default function LoginPage() {
 											id='first_name'
 											type='text'
 											required
-											value={registerData.first_name}
+											value={registerData.firstName}
 											onChange={e =>
 												setRegisterData({
 													...registerData,
-													first_name: e.target.value,
+													firstName: e.target.value,
 												})
 											}
 											placeholder='Имя'
@@ -285,11 +264,11 @@ export default function LoginPage() {
 											id='last_name'
 											type='text'
 											required
-											value={registerData.last_name}
+											value={registerData.lastName}
 											onChange={e =>
 												setRegisterData({
 													...registerData,
-													last_name: e.target.value,
+													lastName: e.target.value,
 												})
 											}
 											placeholder='Фамилия'
@@ -339,11 +318,11 @@ export default function LoginPage() {
 										id='password_confirm'
 										type='password'
 										required
-										value={registerData.password_confirm}
+										value={registerData.passwordConfirm}
 										onChange={e =>
 											setRegisterData({
 												...registerData,
-												password_confirm: e.target.value,
+												passwordConfirm: e.target.value,
 											})
 										}
 										placeholder='Повторите пароль'
@@ -355,7 +334,6 @@ export default function LoginPage() {
 								</Button>
 							</form>
 						)}
-
 						<div className='mt-6'>
 							<div className='relative'>
 								<div className='absolute inset-0 flex items-center'>
@@ -365,7 +343,6 @@ export default function LoginPage() {
 									<span className='px-2 bg-white text-gray-500'>или</span>
 								</div>
 							</div>
-
 							<div className='mt-6'>
 								<Button
 									type='button'
@@ -384,8 +361,6 @@ export default function LoginPage() {
 						</div>
 					</CardContent>
 				</Card>
-
-				{/* Демо данные для тестирования */}
 				<Card className='bg-blue-50'>
 					<CardContent className='pt-6'>
 						<h3 className='text-sm font-medium text-blue-900 mb-2'>
@@ -398,8 +373,6 @@ export default function LoginPage() {
 						</div>
 					</CardContent>
 				</Card>
-
-				{/* Debug information */}
 				{process.env.NODE_ENV === 'development' && (
 					<Card className='bg-yellow-50'>
 						<CardContent className='pt-6'>

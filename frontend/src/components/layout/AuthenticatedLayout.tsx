@@ -1,9 +1,9 @@
 'use client'
-
 import RoleBasedNavigation, {
 	useCurrentUser,
 } from '@/components/navigation/RoleBasedNavigation'
 import { Loader2 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 
 interface AuthenticatedLayoutProps {
@@ -13,72 +13,84 @@ interface AuthenticatedLayoutProps {
 export default function AuthenticatedLayout({
 	children,
 }: AuthenticatedLayoutProps) {
-	const user = useCurrentUser()
-	const [isLoading, setIsLoading] = useState(true)
-	const [authChecked, setAuthChecked] = useState(false)
+	const router = useRouter()
+	const { user, loading: userLoading } = useCurrentUser() // ✅ USE NEW HOOK STRUCTURE
+	const [redirecting, setRedirecting] = useState(false)
 
 	useEffect(() => {
 		const timestamp = new Date().toLocaleTimeString()
 		console.log(
-			`🏗️ [${timestamp}] AUTHENTICATED LAYOUT: Layout mounted, user:`,
-			user
+			`[${timestamp}] AUTHENTICATED LAYOUT: Layout effect, user:`,
+			user,
+			'loading:',
+			userLoading
 		)
 
-		// Give useCurrentUser some time to load
-		const timer = setTimeout(() => {
+		// Only attempt redirect if not loading and no user
+		if (!userLoading && !user && !redirecting) {
+			const timestamp = new Date().toLocaleTimeString()
 			console.log(
-				`⏰ [${timestamp}] AUTHENTICATED LAYOUT: Timer finished, user:`,
-				user
+				`[${timestamp}] AUTHENTICATED LAYOUT: No user found, redirecting to login`
 			)
-			setAuthChecked(true)
-			setIsLoading(false)
-		}, 500) // Reduced from 1000ms to 500ms
 
-		return () => clearTimeout(timer)
-	}, [user])
+			setRedirecting(true)
 
-	// Show loading while checking authentication
-	if (isLoading || !authChecked) {
+			// ✅ STORE CURRENT PATH FOR REDIRECT AFTER LOGIN
+			const currentPath = window.location.pathname
+			if (currentPath !== '/login') {
+				localStorage.setItem('redirectAfterLogin', currentPath)
+			}
+
+			// Clear any auth-related storage before redirect
+			localStorage.removeItem('accessToken')
+			localStorage.removeItem('refreshToken')
+
+			// Use window.location for reliable redirect
+			setTimeout(() => {
+				window.location.href = '/login'
+			}, 100)
+		}
+	}, [user, userLoading, redirecting])
+
+	// Show loading while user is loading or redirecting
+	if (userLoading || redirecting) {
 		return (
 			<div className='min-h-screen flex items-center justify-center bg-gray-50'>
 				<div className='text-center'>
 					<Loader2 className='h-8 w-8 animate-spin mx-auto text-blue-600' />
-					<p className='mt-2 text-gray-600'>Загрузка...</p>
+					<p className='mt-2 text-gray-600'>
+						{redirecting ? 'Перенаправление...' : 'Загрузка...'}
+					</p>
 				</div>
 			</div>
 		)
 	}
 
-	// Only redirect after we've actually checked for the user
-	if (authChecked && !user) {
-		const timestamp = new Date().toLocaleTimeString()
-		console.log(
-			`🚪 [${timestamp}] AUTHENTICATED LAYOUT: No user found, redirecting to login`
+	// If not loading and no user, show loading while redirect happens
+	if (!userLoading && !user) {
+		return (
+			<div className='min-h-screen flex items-center justify-center bg-gray-50'>
+				<div className='text-center'>
+					<Loader2 className='h-8 w-8 animate-spin mx-auto text-blue-600' />
+					<p className='mt-2 text-gray-600'>Проверка авторизации...</p>
+				</div>
+			</div>
 		)
-
-		// ✅ BETTER: Use window.location.replace to avoid back button issues
-		window.location.replace('/login')
-		return null
 	}
 
-	// ✅ Only render if we have a user
-	if (!user) {
-		return null
-	}
-
+	// Render the authenticated layout
 	const timestamp = new Date().toLocaleTimeString()
 	console.log(
-		`✅ [${timestamp}] AUTHENTICATED LAYOUT: Rendering layout with user:`,
-		user.email
+		`[${timestamp}] AUTHENTICATED LAYOUT: Rendering layout with user:`,
+		user?.email
 	)
 
 	return (
 		<div className='min-h-screen bg-gray-50 flex'>
 			{/* Navigation */}
 			<RoleBasedNavigation user={user} />
-
 			{/* Main content */}
-			<div className='flex-1 md:ml-64'>
+			<div className='flex-1'>
 				<main className='min-h-screen'>{children}</main>
 			</div>
 		</div>

@@ -1,5 +1,4 @@
 'use client'
-
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -57,6 +56,12 @@ const navigationItems: NavigationItem[] = [
 		roles: ['ADMIN'],
 	},
 	{
+		label: 'Задачи',
+		href: '/tasks',
+		icon: <BarChart3 className='h-5 w-5' />,
+		roles: ['ADMIN', 'MANAGER'],
+	},
+	{
 		label: 'Аналитика',
 		href: '/analytics',
 		icon: <BarChart3 className='h-5 w-5' />,
@@ -84,7 +89,6 @@ export default function RoleBasedNavigation({
 	const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({})
 
 	useEffect(() => {
-		// Fetch unread counts based on user role
 		if (user) {
 			fetchUnreadCounts()
 		}
@@ -96,7 +100,6 @@ export default function RoleBasedNavigation({
 			if (user?.role === 'MANAGER') {
 				endpoint += '?role=manager'
 			}
-
 			const response = await fetch(endpoint)
 			if (response.ok) {
 				const data = await response.json()
@@ -166,15 +169,14 @@ export default function RoleBasedNavigation({
 					{isOpen ? <X className='h-4 w-4' /> : <Menu className='h-4 w-4' />}
 				</Button>
 			</div>
-
 			{/* Navigation sidebar */}
 			<nav
 				className={`
-        fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-gray-200 transform transition-transform duration-200 ease-in-out
-        ${isOpen ? 'translate-x-0' : '-translate-x-full'}
-        md:translate-x-0 md:static md:inset-0
-        ${className}
-      `}
+          fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-gray-200 transform transition-transform duration-200 ease-in-out
+          ${isOpen ? 'translate-x-0' : '-translate-x-full'}
+          md:translate-x-0 md:static md:inset-0
+          ${className}
+        `}
 			>
 				<div className='flex flex-col h-full'>
 					{/* Header */}
@@ -196,7 +198,6 @@ export default function RoleBasedNavigation({
 							</Button>
 						</div>
 					</div>
-
 					{/* User info */}
 					<div className='p-4 border-b border-gray-200'>
 						<div className='flex items-center space-x-3'>
@@ -216,7 +217,6 @@ export default function RoleBasedNavigation({
 							</div>
 						</div>
 					</div>
-
 					{/* Navigation items */}
 					<div className='flex-1 overflow-y-auto py-4'>
 						<nav className='space-y-1 px-3'>
@@ -241,7 +241,6 @@ export default function RoleBasedNavigation({
 							))}
 						</nav>
 					</div>
-
 					{/* Footer */}
 					<div className='p-4 border-t border-gray-200'>
 						<div className='text-xs text-gray-500'>
@@ -251,7 +250,6 @@ export default function RoleBasedNavigation({
 					</div>
 				</div>
 			</nav>
-
 			{/* Overlay for mobile */}
 			{isOpen && (
 				<div
@@ -263,8 +261,13 @@ export default function RoleBasedNavigation({
 	)
 }
 
-// Hook для получения текущего пользователя
-export function useCurrentUser(): User | null {
+// ✅ FIXED: Hook for getting the current user with proper loading state management
+interface UseCurrentUserReturn {
+	user: User | null
+	loading: boolean
+}
+
+export function useCurrentUser(): UseCurrentUserReturn {
 	const [user, setUser] = useState<User | null>(null)
 	const [loading, setLoading] = useState(true)
 
@@ -275,10 +278,21 @@ export function useCurrentUser(): User | null {
 				`👤 [${timestamp}] useCurrentUser: Loading user from token...`
 			)
 
-			try {
-				// ✅ FIXED: Use correct token key
-				const token = localStorage.getItem('accessToken')
+			// Check for logout in progress
+			const logoutInProgress =
+				localStorage.getItem('logoutInProgress') === 'true'
+			if (logoutInProgress) {
+				console.log(
+					`🚪 [${timestamp}] useCurrentUser: Logout in progress, skipping load`
+				)
+				localStorage.removeItem('logoutInProgress')
+				setUser(null)
+				setLoading(false)
+				return
+			}
 
+			try {
+				const token = localStorage.getItem('accessToken')
 				console.log(`🔑 [${timestamp}] useCurrentUser: Token check:`, {
 					hasToken: !!token,
 					tokenLength: token?.length || 0,
@@ -291,10 +305,8 @@ export function useCurrentUser(): User | null {
 					return
 				}
 
-				// ✅ FIXED: Extract user data from JWT token
 				const payload = JSON.parse(atob(token.split('.')[1]))
 				const isExpired = payload.exp < Math.floor(Date.now() / 1000)
-
 				console.log(`🎫 [${timestamp}] useCurrentUser: Token payload:`, {
 					role: payload.role,
 					email: payload.email,
@@ -315,7 +327,6 @@ export function useCurrentUser(): User | null {
 					return
 				}
 
-				// ✅ FIXED: Create user object from token payload
 				const userData: User = {
 					id: payload.sub || payload.userId || payload.id,
 					email: payload.email,
@@ -325,7 +336,6 @@ export function useCurrentUser(): User | null {
 							: payload.email.split('@')[0], // Fallback to email username
 					role: payload.role as 'ADMIN' | 'MANAGER',
 				}
-
 				console.log(
 					`✅ [${timestamp}] useCurrentUser: User loaded successfully:`,
 					userData
@@ -336,7 +346,6 @@ export function useCurrentUser(): User | null {
 					`❌ [${timestamp}] useCurrentUser: Error loading user:`,
 					error
 				)
-				// Clear invalid tokens
 				localStorage.removeItem('accessToken')
 				localStorage.removeItem('refreshToken')
 				setUser(null)
@@ -348,11 +357,6 @@ export function useCurrentUser(): User | null {
 		loadUserFromToken()
 	}, [])
 
-	// Don't return user until loading is complete
-	if (loading) {
-		console.log('⏳ useCurrentUser: Still loading user...')
-		return null
-	}
-
-	return user
+	// ✅ RETURN BOTH USER AND LOADING STATE
+	return { user, loading }
 }
