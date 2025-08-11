@@ -14,77 +14,119 @@ export const config = {
 		expiresIn: process.env.JWT_EXPIRES_IN || '24h',
 	},
 
-	// Redis Configuration
+	// Redis Configuration for tenant caching
 	redis: {
 		host: process.env.REDIS_HOST || 'localhost',
 		port: parseInt(process.env.REDIS_PORT || '6379', 10),
 		password: process.env.REDIS_PASSWORD,
+		db: parseInt(process.env.REDIS_DB || '0', 10),
 	},
 
 	// CORS Configuration
 	cors: {
-		origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+		origin: process.env.CORS_ORIGIN || 'http://localhost:3009',
 	},
 
-	// Services Configuration - CURRENT MICROSERVICES ARCHITECTURE
+	// Services Configuration
 	services: {
-		// === ACTIVE MICROSERVICES ===
-
 		// Identity Service (NestJS) - Authentication & User Management
 		auth: {
 			url: process.env.AUTH_SERVICE_URL || 'http://localhost:3002',
 			timeout: 30000,
 		},
 
-		// Core CRM Service (Kotlin Spring Boot) - All CRM business logic
-		// Handles: users, contacts, companies, opportunities, dashboard, admin, manager inbox
+		// Core CRM Service (Kotlin Spring Boot) - Main CRM functionality
 		crm: {
-			url: process.env.CRM_SERVICE_URL || 'http://core-crm:8080',
+			url: process.env.CRM_SERVICE_URL || 'http://localhost:8080',
 			timeout: 30000,
 		},
 
-		// Notification Service (NestJS) - Multi-channel notifications & messaging
-		// Handles: notifications, messaging (Telegram, email, SMS), inbox threads
+		// Notification Service (NestJS) - Multi-channel notifications
 		notifications: {
-			url:
-				process.env.NOTIFICATION_SERVICE_URL ||
-				'http://notification-service:3003',
+			url: process.env.NOTIFICATION_SERVICE_URL || 'http://localhost:3003',
 			timeout: 30000,
 		},
 
+		// Messaging Service - Chat and messaging
+		messaging: {
+			url: process.env.MESSAGING_SERVICE_URL || 'http://localhost:3004',
+			timeout: 30000,
+		},
+
+		// Kwork Integration
 		kwork: {
-			url: process.env.KWORK_SERVICE_URL || 'http://kwork-service:8081', // Adjust URL/port
+			url: process.env.KWORK_SERVICE_URL || 'http://kwork-service:8000',
 			timeout: 30000,
 		},
 
-		// === NOT RUNNING SERVICES (disabled) ===
-		// These services are not currently running, commenting out to avoid health check failures
-		/*
-    erp: {
-      url: process.env.ERP_SERVICE_URL || 'http://erp-service:8006',
-      timeout: 30000,
-    },
-    marketing: {
-      url: process.env.MARKETING_SERVICE_URL || 'http://marketing-service:8007',
-      timeout: 30000,
-    },
-    plugins: {
-      url: process.env.PLUGINS_SERVICE_URL || 'http://plugins-service:8008',
-      timeout: 30000,
-    },
-    customfields: {
-      url: process.env.CUSTOM_FIELDS_SERVICE_URL || 'http://custom-fields-service:8009',
-      timeout: 30000,
-    },
-    oauth2: {
-      url: process.env.OAUTH2_SERVICE_URL || 'http://oauth2-service:8010',
-      timeout: 30000,
-    },
-    workflow: {
-      url: process.env.WORKFLOW_ENGINE_URL || 'http://workflow-engine:8011',
-      timeout: 30000,
-    },
-    */
+		// === ADDITIONAL MICROSERVICES ===
+		analytics: {
+			url: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8005',
+			timeout: 30000,
+		},
+
+		erp: {
+			url: process.env.ERP_SERVICE_URL || 'http://erp-service:8006',
+			timeout: 30000,
+		},
+
+		marketing: {
+			url: process.env.MARKETING_SERVICE_URL || 'http://marketing-service:8007',
+			timeout: 30000,
+		},
+
+		ai: {
+			url: process.env.AI_SERVICE_URL || 'http://ai-service:8008',
+			timeout: 30000,
+		},
+
+		plugins: {
+			url: process.env.PLUGINS_SERVICE_URL || 'http://plugins-system:8009',
+			timeout: 30000,
+		},
+
+		customFields: {
+			url:
+				process.env.CUSTOM_FIELDS_SERVICE_URL ||
+				'http://custom-fields-service:8010',
+			timeout: 30000,
+		},
+
+		workflow: {
+			url: process.env.WORKFLOW_SERVICE_URL || 'http://workflow-engine:8012',
+			timeout: 30000,
+		},
+
+		eventIngestion: {
+			url:
+				process.env.EVENT_INGESTION_SERVICE_URL ||
+				'http://event-ingestion-service:8013',
+			timeout: 30000,
+		},
+
+		extensionRuntime: {
+			url:
+				process.env.EXTENSION_RUNTIME_SERVICE_URL ||
+				'http://extension-runtime-service:8014',
+			timeout: 30000,
+		},
+
+		tenantOrchestrator: {
+			url:
+				process.env.TENANT_ORCHESTRATOR_URL ||
+				'http://tenant-orchestrator:8015',
+			timeout: 30000,
+		},
+	},
+
+	// Multi-tenancy Configuration
+	multiTenancy: {
+		cacheTimeoutSeconds: parseInt(
+			process.env.TENANT_CACHE_TIMEOUT || '300',
+			10
+		), // 5 minutes
+		rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW || '60', 10), // 1 minute
+		enableResourceLimits: process.env.ENABLE_RESOURCE_LIMITS !== 'false',
 	},
 
 	// Logging Configuration
@@ -98,5 +140,7 @@ export const config = {
 		bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS || '12', 10),
 		sessionSecret:
 			process.env.SESSION_SECRET || 'your-session-secret-change-in-production',
+		internalServiceAuth:
+			process.env.INTERNAL_SERVICE_AUTH || 'gateway-internal',
 	},
 }

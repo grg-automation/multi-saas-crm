@@ -17,7 +17,4 @@ interface TenantRepository : JpaRepository<TenantEntity, UUID> {
 
     @Query("SELECT t FROM TenantEntity t WHERE t.isTrial = true AND t.trialEndsAt < CURRENT_TIMESTAMP")
     fun findExpiredTrials(): List<TenantEntity>
-
-    @Query("SELECT COUNT(t) FROM Task t WHERE t.tenantId = :tenantId AND t.status != 'DONE'")
-    fun countActiveTasks(@Param("tenantId") tenantId: UUID): Long
 }

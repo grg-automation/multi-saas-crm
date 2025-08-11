@@ -9,7 +9,7 @@ async function bootstrap() {
 
   // Enable CORS for frontend communication
   app.enableCors({
-    origin: ['http://localhost:3009', 'http://frontend:3000'],
+    origin: ['http://localhost:3009', 'http://frontend:3001'],
     credentials: true,
   });
 
@@ -40,7 +40,7 @@ async function bootstrap() {
   // Global prefix
   app.setGlobalPrefix('api/v1');
 
-  const port = process.env.PORT || 3003;
+  const port = process.env.PORT || 3004;
   await app.listen(port);
 
   console.log(`🚀 Messaging Service running on port ${port}`);

@@ -1,3 +1,4 @@
+// api-gateway/src/index.ts - ENHANCED VERSION
 import cors from 'cors'
 import express from 'express'
 import rateLimit from 'express-rate-limit'
@@ -7,7 +8,11 @@ import { config } from './config'
 import { authMiddleware } from './middleware/auth'
 import { errorHandler } from './middleware/errorHandler'
 import { loggingMiddleware } from './middleware/logging'
-import { tenantMiddleware } from './middleware/tenant'
+import {
+	tenantMiddleware,
+	tenantRateLimit,
+	validateTenantLimits,
+} from './middleware/tenant'
 import { healthCheck } from './routes/health'
 import kworkRoutes from './routes/kwork'
 import { serviceRegistry } from './services/serviceRegistry'
@@ -37,13 +42,15 @@ app.use(
 	})
 )
 
-// Rate limiting
-const limiter = rateLimit({
+// Global rate limiting (fallback)
+const globalLimiter = rateLimit({
 	windowMs: 15 * 60 * 1000, // 15 minutes
-	max: 1000, // limit each IP to 1000 requests per windowMs
+	max: 1000, // Global limit
 	message: 'Too many requests from this IP, please try again later.',
+	standardHeaders: true,
+	legacyHeaders: false,
 })
-app.use(limiter)
+app.use(globalLimiter)
 
 // Request parsing
 app.use(express.json({ limit: '10mb' }))
@@ -51,30 +58,24 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 // Custom middleware
 app.use(loggingMiddleware)
-// Temporarily disable tenant middleware
-app.use(tenantMiddleware)
 
-// Health check endpoint
+// Health check endpoint (no auth needed)
 app.use('/health', healthCheck)
 
-// ===== KWORK SERVICE ROUTES =====
-app.use('/api/v1/kwork', authMiddleware, kworkRoutes)
-
-// ===== AUTHENTICATION ROUTES (Identity Service) =====
-// Public auth routes - no auth middleware needed
+// ===== PUBLIC AUTHENTICATION ROUTES =====
+// No auth middleware needed for these
 app.use(
 	'/api/v1/auth',
 	createProxyMiddleware({
 		target: serviceRegistry.getService('auth').url,
 		changeOrigin: true,
 		pathRewrite: {
-			'^/api/v1/auth': '/api/v1/auth', // Keep the full path for identity-service
+			'^/api/v1/auth': '/api/v1/auth',
 		},
 		onError: (err, req, res) => {
 			logger.error('Auth service proxy error:', err)
 			res.status(503).json({ error: 'Auth service unavailable' })
 		},
-
 		onProxyReq: (proxyReq, req, res) => {
 			if (req.body) {
 				const bodyData = JSON.stringify(req.body)
@@ -87,11 +88,120 @@ app.use(
 	})
 )
 
+// ===== PROTECTED ROUTES (REQUIRE AUTH + TENANT) =====
+// Apply auth and tenant middleware to all protected routes
+app.use('/api/v1', authMiddleware, tenantMiddleware, tenantRateLimit)
+
+// ===== CRM CORE ROUTES (with resource limit validation) =====
+// Companies
+app.use(
+	'/api/v1/companies',
+	validateTenantLimits('companies'),
+	createProxyMiddleware({
+		target: serviceRegistry.getService('crm').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/api/v1/companies': '/companies', // Kotlin service expects this path
+		},
+		onError: (err, req, res) => {
+			logger.error('Companies service proxy error:', err)
+			res.status(503).json({ error: 'Companies service unavailable' })
+		},
+	})
+)
+
+// Contacts
+app.use(
+	'/api/v1/contacts',
+	validateTenantLimits('contacts'),
+	createProxyMiddleware({
+		target: serviceRegistry.getService('crm').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/api/v1/contacts': '/contacts',
+		},
+		onError: (err, req, res) => {
+			logger.error('Contacts service proxy error:', err)
+			res.status(503).json({ error: 'Contacts service unavailable' })
+		},
+	})
+)
+
+// Opportunities
+app.use(
+	'/api/v1/opportunities',
+	validateTenantLimits('opportunities'),
+	createProxyMiddleware({
+		target: serviceRegistry.getService('crm').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/api/v1/opportunities': '/opportunities',
+		},
+		onError: (err, req, res) => {
+			logger.error('Opportunities service proxy error:', err)
+			res.status(503).json({ error: 'Opportunities service unavailable' })
+		},
+	})
+)
+
+// Tasks
+app.use(
+	'/api/v1/tasks',
+	validateTenantLimits('tasks'),
+	createProxyMiddleware({
+		target: serviceRegistry.getService('crm').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/api/v1/tasks': '/api/v1/tasks', // Tasks might be on different path
+		},
+		onError: (err, req, res) => {
+			logger.error('Tasks service proxy error:', err)
+			res.status(503).json({ error: 'Tasks service unavailable' })
+		},
+	})
+)
+
+// Users (no limits needed)
+app.use(
+	'/api/v1/users',
+	createProxyMiddleware({
+		target: serviceRegistry.getService('crm').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/api/v1/users': '/users',
+		},
+		onError: (err, req, res) => {
+			logger.error('Users service proxy error:', err)
+			res.status(503).json({ error: 'Users service unavailable' })
+		},
+	})
+)
+
+// Admin routes (require admin role)
+app.use(
+	'/api/v1/admin',
+	(req: any, res, next) => {
+		if (!req.user || !['admin', 'super_admin'].includes(req.user.role)) {
+			return res.status(403).json({ error: 'Admin access required' })
+		}
+		next()
+	},
+	createProxyMiddleware({
+		target: serviceRegistry.getService('crm').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/api/v1/admin': '/api/v1/admin',
+		},
+		onError: (err, req, res) => {
+			logger.error('Admin service proxy error:', err)
+			res.status(503).json({ error: 'Admin service unavailable' })
+		},
+	})
+)
+
 // ===== NOTIFICATION SERVICE ROUTES =====
-// Notification endpoints
 app.use(
 	'/api/v1/notifications',
-	authMiddleware,
 	createProxyMiddleware({
 		target: serviceRegistry.getService('notifications').url,
 		changeOrigin: true,
@@ -105,44 +215,9 @@ app.use(
 	})
 )
 
-// Messaging endpoints (from CRM service)
-app.use(
-	'/api/v1/messaging',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('crm').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/messaging': '/api/v1/messaging',
-		},
-		onError: (err, req, res) => {
-			logger.error('Messaging proxy error:', err)
-			res.status(503).json({ error: 'Messaging service unavailable' })
-		},
-	})
-)
-
-// Telegram User API V2 endpoints (from notification service)
-app.use(
-	'/api/v1/telegram-user-v2',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('notifications').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/telegram-user-v2': '/api/v1/telegram-user-v2',
-		},
-		onError: (err, req, res) => {
-			logger.error('Telegram V2 proxy error:', err)
-			res.status(503).json({ error: 'Telegram V2 service unavailable' })
-		},
-	})
-)
-
-// Manager endpoints (from notification service)
+// Manager endpoints
 app.use(
 	'/api/v1/manager',
-	authMiddleware,
 	createProxyMiddleware({
 		target: serviceRegistry.getService('notifications').url,
 		changeOrigin: true,
@@ -156,179 +231,40 @@ app.use(
 	})
 )
 
-// ===== CORE CRM SERVICE ROUTES (Kotlin Spring Boot) =====
-// All CRM routes go to the Kotlin service
-
-// Admin routes - require authentication and admin role
-// Route admin requests to notification-service manager endpoint which proxies to CRM
+// ===== MESSAGING SERVICE ROUTES =====
 app.use(
-	'/api/v1/admin/assign-chat',
-	authMiddleware,
+	'/api/v1/messaging',
 	createProxyMiddleware({
-		target: serviceRegistry.getService('notifications').url,
+		target: serviceRegistry.getService('crm').url, // Or messaging service if separate
 		changeOrigin: true,
 		pathRewrite: {
-			'^/api/v1/admin/assign-chat': '/api/v1/manager/assign-chat', // Route to manager endpoint
+			'^/api/v1/messaging': '/api/v1/messaging',
 		},
 		onError: (err, req, res) => {
-			logger.error('Admin assign-chat proxy error:', err)
-			res.status(503).json({ error: 'Admin assign-chat service unavailable' })
+			logger.error('Messaging proxy error:', err)
+			res.status(503).json({ error: 'Messaging service unavailable' })
 		},
 	})
 )
 
-// Admin managers list - route to notification-service
-app.use(
-	'/api/v1/admin/managers',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('notifications').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/admin/managers': '/api/v1/manager/list', // Route to manager list endpoint
-		},
-		onError: (err, req, res) => {
-			logger.error('Admin managers proxy error:', err)
-			res.status(503).json({ error: 'Admin managers service unavailable' })
-		},
-	})
-)
+// ===== KWORK INTEGRATION =====
+app.use('/api/v1/kwork', kworkRoutes)
 
-// Other admin routes go to CRM service
-app.use(
-	'/api/v1/admin',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('crm').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/admin': '/api/v1/admin', // Keep full path
-		},
-		onError: (err, req, res) => {
-			logger.error('Admin service proxy error:', err)
-			res.status(503).json({ error: 'Admin service unavailable' })
-		},
-	})
-)
+// ===== TENANT INFORMATION ENDPOINT =====
+app.get('/api/v1/tenant/current', (req: any, res) => {
+	if (!req.tenant) {
+		return res.status(400).json({ error: 'No tenant context' })
+	}
 
-// Users/Profile routes
-app.use(
-	'/api/v1/users',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('crm').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/users': '/api/v1/users',
-		},
-		onError: (err, req, res) => {
-			logger.error('Users service proxy error:', err)
-			res.status(503).json({ error: 'Users service unavailable' })
+	res.json({
+		tenant: req.tenant,
+		user: {
+			id: req.user.id,
+			email: req.user.email,
+			role: req.user.role,
 		},
 	})
-)
-
-// Contacts routes
-app.use(
-	'/api/v1/contacts',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('crm').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/contacts': '/api/v1/contacts',
-		},
-		onError: (err, req, res) => {
-			logger.error('Contacts service proxy error:', err)
-			res.status(503).json({ error: 'Contacts service unavailable' })
-		},
-	})
-)
-
-// Companies routes
-app.use(
-	'/api/v1/companies',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('crm').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/companies': '/api/v1/companies',
-		},
-		onError: (err, req, res) => {
-			logger.error('Companies service proxy error:', err)
-			res.status(503).json({ error: 'Companies service unavailable' })
-		},
-	})
-)
-
-// Opportunities/Deals routes
-app.use(
-	'/api/v1/opportunities',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('crm').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/opportunities': '/api/v1/opportunities',
-		},
-		onError: (err, req, res) => {
-			logger.error('Opportunities service proxy error:', err)
-			res.status(503).json({ error: 'Opportunities service unavailable' })
-		},
-	})
-)
-
-// Dashboard routes
-app.use(
-	'/api/v1/dashboard',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('crm').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/dashboard': '/api/v1/dashboard',
-		},
-		onError: (err, req, res) => {
-			logger.error('Dashboard service proxy error:', err)
-			res.status(503).json({ error: 'Dashboard service unavailable' })
-		},
-	})
-)
-
-// Inbox/Messaging routes (CRM handles message storage and threading)
-app.use(
-	'/api/v1/inbox',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('crm').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/inbox': '/api/v1/inbox',
-		},
-		onError: (err, req, res) => {
-			logger.error('Inbox service proxy error:', err)
-			res.status(503).json({ error: 'Inbox service unavailable' })
-		},
-	})
-)
-
-// Manager routes (from notification service)
-app.use(
-	'/api/v1/manager',
-	authMiddleware,
-	createProxyMiddleware({
-		target: serviceRegistry.getService('notifications').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/api/v1/manager': '/api/v1/manager',
-		},
-		onError: (err, req, res) => {
-			logger.error('Manager service proxy error:', err)
-			res.status(503).json({ error: 'Manager service unavailable' })
-		},
-	})
-)
+})
 
 // Error handling middleware
 app.use(errorHandler)
@@ -341,9 +277,15 @@ app.use('*', (req, res) => {
 // Start server
 const PORT = config.port || 3001
 app.listen(PORT, () => {
-	logger.info(`API Gateway started on port ${PORT}`)
+	logger.info(`🚀 Enhanced API Gateway started on port ${PORT}`)
 	logger.info(`Environment: ${config.environment}`)
-	logger.info('Services:', serviceRegistry.listServices())
+	logger.info('Multi-tenancy: ENABLED')
+	logger.info('Tenant caching: ENABLED (Redis)')
+	logger.info('Rate limiting: Per-tenant enabled')
+	logger.info(
+		'Services:',
+		serviceRegistry.listServices().map(s => s.name)
+	)
 })
 
 // Graceful shutdown
