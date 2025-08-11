@@ -48,12 +48,16 @@ export default function ManagerChatPage() {
 	const messagesEndRef = useRef<HTMLDivElement>(null)
 
 	useEffect(() => {
-		if (threadId) {
+		let isMounted = true
+
+		if (threadId && isMounted) {
+			console.log('🚀 Initializing chat for thread:', threadId)
 			fetchChatData()
 			initializeWebSocket()
 		}
 
 		return () => {
+			isMounted = false
 			if (socketRef.current) {
 				console.log('🔌 Disconnecting WebSocket on cleanup')
 				socketRef.current.disconnect()
@@ -124,19 +128,50 @@ export default function ManagerChatPage() {
 	const fetchMessages = async () => {
 		try {
 			console.log('📬 Fetching messages for thread:', threadId)
+			const token = localStorage.getItem('accessToken')
 
-			// Try to get messages from your API
 			const response = await fetch(
-				`http://localhost:3000/api/threads/${threadId}/messages`
+				`http://localhost:3003/api/v1/thread/${threadId}/messages`,
+				{
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Bearer ${token}`, // Fixed typo in 'Authorization'
+					},
+				}
 			)
 
+			const responseData = await response.json()
+			console.log('📨 Messages API Response:', responseData)
+
 			if (response.ok) {
-				const messagesData = await response.json()
-				console.log('📨 Messages received:', messagesData)
-				// Ensure we always set an array
-				setMessages(Array.isArray(messagesData) ? messagesData : [])
+				// Update to handle paginated response structure
+				const messages = responseData.content || []
+				const formattedMessages: Message[] = messages.map(msg => ({
+					id: msg.id || String(Date.now()),
+					threadId: msg.threadId || threadId,
+					content: msg.content || msg.text || '',
+					senderId: msg.senderId || msg.from || 'unknown',
+					senderName: msg.senderName || 'Unknown Sender',
+					timestamp: msg.timestamp || msg.createdAt || new Date().toISOString(),
+					direction: msg.direction ? msg.direction.toLowerCase() as 'inbound' | 'outbound' : (msg.senderId === currentUserId ? 'outbound' : 'inbound'),
+				}))
+
+				console.log('📝 Formatted Messages:', formattedMessages)
+				console.log('🔍 Direction mapping check:')
+				messages.forEach((msg, index) => {
+					console.log(`  Message ${index + 1}:`, {
+						id: msg.id,
+						content: msg.content?.substring(0, 30) + '...',
+						backendDirection: msg.direction,
+						senderId: msg.senderId,
+						currentUserId: currentUserId,
+						finalDirection: msg.direction || (msg.senderId === currentUserId ? 'outbound' : 'inbound'),
+						senderName: msg.senderName
+					})
+				})
+				setMessages(formattedMessages)
 			} else {
-				console.log('⚠️ No messages found or API not available')
+				console.error('❌ Failed to fetch messages:', responseData)
 				setMessages([])
 			}
 		} catch (error) {
@@ -146,15 +181,19 @@ export default function ManagerChatPage() {
 	}
 
 	const initializeWebSocket = () => {
-		console.log('🔌 Initializing WebSocket connection to localhost:3000')
+		console.log('🔌 Initializing WebSocket connection to localhost:3003')
 
-		const socket = io('http://localhost:3000', {
+		const socket = io('http://localhost:3003', {
 			transports: ['websocket'],
 			path: '/socket.io',
 			reconnection: true,
 			reconnectionAttempts: 10,
 			reconnectionDelay: 1000,
 			timeout: 20000,
+			// Add these options
+			forceNew: true,
+			autoConnect: true,
+			withCredentials: true,
 		})
 
 		socketRef.current = socket
@@ -162,35 +201,57 @@ export default function ManagerChatPage() {
 		socket.on('connect', () => {
 			console.log('✅ Connected to WebSocket, socket ID:', socket.id)
 			setSocketConnected(true)
+			// Subscribe to general tenant updates
 			socket.emit('subscribe', 'tenant_default')
+			// Join specific thread for real-time chat
 			socket.emit('join_thread', threadId)
+			console.log(`🏠 Joining thread: ${threadId}`)
 		})
 
 		socket.on('subscribed', data => {
 			console.log('✅ Subscribed to session:', data.sessionId)
 		})
 
+		socket.on('joined_thread', data => {
+			console.log('✅ Joined thread:', data.threadId)
+		})
+
 		socket.on('new_message', data => {
-			console.log('📨 New message received via WebSocket:', data)
+			console.log('📨 Raw WebSocket message:', data)
 
 			// Check if the message belongs to current thread
 			if (data.threadId === threadId) {
 				const newMsg: Message = {
-					id: data.id || Date.now().toString(),
+					id: data.id || `ws_${Date.now()}`,
 					threadId: data.threadId,
-					content: data.content || data.message,
-					senderId: data.senderId || data.from,
-					senderName: data.senderName || data.fromName || data.senderId,
+					content: data.content || data.text || data.message || '',
+					senderId: data.senderId || data.from || 'unknown',
+					senderName: data.senderName || 'Unknown Sender',
 					timestamp: data.timestamp || new Date().toISOString(),
-					direction: data.senderId === currentUserId ? 'outbound' : 'inbound',
+					direction: data.direction ? data.direction.toLowerCase() as 'inbound' | 'outbound' : (data.senderId === currentUserId ? 'outbound' : 'inbound'),
 				}
 
+				console.log('📝 Formatted WebSocket message:', newMsg)
+
 				setMessages(prev => {
-					// Avoid duplicates
-					const exists = prev.some(msg => msg.id === newMsg.id)
-					if (exists) return prev
+					// Avoid duplicates by checking ID and content
+					const isDuplicate = prev.some(msg => 
+						msg.id === newMsg.id || 
+						(msg.content === newMsg.content && 
+						 msg.senderId === newMsg.senderId && 
+						 Math.abs(new Date(msg.timestamp).getTime() - new Date(newMsg.timestamp).getTime()) < 1000)
+					)
+					
+					if (isDuplicate) {
+						console.log('⚠️ Duplicate message skipped:', newMsg.id)
+						return prev
+					}
+					
+					console.log('✅ Adding new WebSocket message:', newMsg.id)
 					return [...prev, newMsg]
 				})
+			} else {
+				console.log('🚫 Message for different thread:', data.threadId, 'current:', threadId)
 			}
 		})
 
@@ -207,18 +268,25 @@ export default function ManagerChatPage() {
 		socket.on('connect_error', error => {
 			console.error('❌ WebSocket connection error:', error.message)
 			setSocketConnected(false)
+			// Add reconnection attempt
+			setTimeout(() => {
+				console.log('🔄 Attempting to reconnect...')
+				socket.connect()
+			}, 5000)
 		})
 	}
 
 	const sendMessage = async () => {
-		if (!newMessage.trim() || sending || !socketConnected) return
+		if (!newMessage.trim() || sending) return
 
 		setSending(true)
+		const messageContent = newMessage.trim()
+		setNewMessage('') // Clear input immediately for better UX
 
 		try {
 			const messageData = {
 				threadId: threadId,
-				content: newMessage.trim(),
+				content: messageContent,
 				senderId: currentUserId,
 				senderName: currentUserId === 'manager_1' ? 'Manager' : currentUserId,
 				timestamp: new Date().toISOString(),
@@ -226,33 +294,85 @@ export default function ManagerChatPage() {
 
 			console.log('📤 Sending message:', messageData)
 
-			// Send via WebSocket
-			socketRef.current?.emit('send_message', messageData)
-
-			// Also try to send via HTTP API as backup
+			// Always send via HTTP API first to ensure persistence
 			try {
-				await fetch(`http://localhost:3000/api/threads/${threadId}/messages`, {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-					},
-					body: JSON.stringify(messageData),
-				})
+				const response = await fetch(
+					`http://localhost:3003/api/v1/thread/${threadId}/messages`,
+					{
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+						},
+						body: JSON.stringify(messageData),
+					}
+				)
+
+				const responseData = await response.json()
+				console.log('✅ HTTP API response:', responseData)
+
+				if (response.ok) {
+					// Message was saved successfully
+					const savedMessage: Message = {
+						id: responseData.id || Date.now().toString(),
+						threadId: responseData.threadId || threadId,
+						content: responseData.content || messageContent,
+						senderId: responseData.senderId || currentUserId,
+						senderName: responseData.senderName || 'Manager',
+						timestamp: responseData.timestamp || responseData.sentAt || new Date().toISOString(),
+						direction: 'outbound',
+					}
+
+					// Add to local state immediately
+					setMessages(prev => [...prev, savedMessage])
+
+					// Send via WebSocket for real-time updates to other clients only
+					// Don't broadcast to self to avoid duplicates
+					if (socketConnected && socketRef.current) {
+						socketRef.current.emit('send_message', {
+							...savedMessage,
+							id: savedMessage.id
+						})
+					}
+				} else {
+					throw new Error(`HTTP request failed: ${response.status}`)
+				}
 			} catch (apiError) {
-				console.log('⚠️ HTTP API not available, using WebSocket only')
+				console.error('❌ HTTP API failed:', apiError)
+				
+				// Fallback to WebSocket only
+				if (socketConnected && socketRef.current) {
+					const fallbackMessage: Message = {
+						id: Date.now().toString(),
+						threadId,
+						content: messageContent,
+						senderId: currentUserId,
+						senderName: currentUserId === 'manager_1' ? 'Manager' : currentUserId,
+						timestamp: new Date().toISOString(),
+						direction: 'outbound',
+					}
+
+					setMessages(prev => [...prev, fallbackMessage])
+					socketRef.current.emit('send_message', fallbackMessage)
+					console.log('⚠️ Used WebSocket fallback')
+				} else {
+					// No connection available - add message locally with warning
+					const localMessage: Message = {
+						id: `local_${Date.now()}`,
+						threadId,
+						content: messageContent,
+						senderId: currentUserId,
+						senderName: 'Manager (Offline)',
+						timestamp: new Date().toISOString(),
+						direction: 'outbound',
+					}
+					setMessages(prev => [...prev, localMessage])
+					console.error('❌ No connection available - message saved locally only')
+				}
 			}
 
-			// Add to local state immediately for better UX
-			const localMessage: Message = {
-				id: Date.now().toString(),
-				...messageData,
-				direction: 'outbound',
-			}
-
-			setMessages(prev => [...prev, localMessage])
-			setNewMessage('')
 		} catch (error) {
 			console.error('❌ Error sending message:', error)
+			setNewMessage(messageContent) // Restore message content on error
 		} finally {
 			setSending(false)
 		}
@@ -273,6 +393,65 @@ export default function ManagerChatPage() {
 		socketRef.current?.emit('send_message', messageData)
 
 		setTestMessage('')
+	}
+
+	const addTestMessage = () => {
+		const testMessage: Message = {
+			id: String(Date.now()),
+			threadId: threadId,
+			content: 'This is a test message',
+			senderId: 'user456',
+			senderName: 'Test User',
+			timestamp: new Date().toISOString(),
+			direction: 'inbound',
+		}
+
+		setMessages(prev => [...prev, testMessage])
+	}
+
+	const simulateIncomingMessage = () => {
+		const mockWebSocketMessage = {
+			id: `ws_${Date.now()}`,
+			threadId: threadId,
+			content: 'This is a simulated Telegram message',
+			senderId: 'telegram_user',
+			senderName: 'Telegram User',
+			timestamp: new Date().toISOString(),
+		}
+
+		// Simulate WebSocket event
+		if (socketRef.current) {
+			socketRef.current.emit('new_message', mockWebSocketMessage)
+		}
+	}
+
+	// Add this function after your existing functions
+	const runTestSequence = () => {
+		// Add initial message from user
+		const userMessage: Message = {
+			id: `test_${Date.now()}`,
+			threadId: threadId,
+			content: 'Hello! I need help with my order',
+			senderId: 'user456',
+			senderName: 'Test User',
+			timestamp: new Date().toISOString(),
+			direction: 'inbound',
+		}
+		setMessages(prev => [...prev, userMessage])
+
+		// Simulate manager response after 1 second
+		setTimeout(() => {
+			const managerMessage: Message = {
+				id: `test_${Date.now()}`,
+				threadId: threadId,
+				content: "Hi! I'm here to help. What's your order number?",
+				senderId: 'manager_1',
+				senderName: 'Manager',
+				timestamp: new Date().toISOString(),
+				direction: 'outbound',
+			}
+			setMessages(prev => [...prev, managerMessage])
+		}, 1000)
 	}
 
 	if (loading) {
@@ -414,6 +593,20 @@ export default function ManagerChatPage() {
 								>
 									Send Test
 								</Button>
+								<Button size='sm' onClick={addTestMessage} className='ml-2'>
+									Add Test Message
+								</Button>
+								<Button size='sm' onClick={runTestSequence} className='ml-2'>
+									Run Test Chat
+								</Button>
+								<Button
+									size='sm'
+									onClick={simulateIncomingMessage}
+									className='ml-2'
+									disabled={!socketConnected}
+								>
+									Simulate Message
+								</Button>
 							</div>
 						</div>
 					</div>
@@ -468,12 +661,11 @@ export default function ManagerChatPage() {
 							onKeyPress={e =>
 								e.key === 'Enter' && !e.shiftKey && sendMessage()
 							}
-							disabled={!socketConnected}
 							className='flex-1'
 						/>
 						<Button
 							onClick={sendMessage}
-							disabled={!newMessage.trim() || sending || !socketConnected}
+							disabled={!newMessage.trim() || sending}
 							className='flex items-center gap-2'
 						>
 							<Send className='h-4 w-4' />
@@ -481,8 +673,8 @@ export default function ManagerChatPage() {
 						</Button>
 					</div>
 					{!socketConnected && (
-						<p className='text-sm text-red-500 mt-1'>
-							WebSocket disconnected - messages cannot be sent
+						<p className='text-sm text-orange-500 mt-1'>
+							⚠️ WebSocket disconnected - using HTTP API only
 						</p>
 					)}
 				</div>

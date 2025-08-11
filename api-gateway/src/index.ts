@@ -7,10 +7,11 @@ import { config } from './config'
 import { authMiddleware } from './middleware/auth'
 import { errorHandler } from './middleware/errorHandler'
 import { loggingMiddleware } from './middleware/logging'
+import { tenantMiddleware } from './middleware/tenant'
 import { healthCheck } from './routes/health'
+import kworkRoutes from './routes/kwork'
 import { serviceRegistry } from './services/serviceRegistry'
 import { logger } from './utils/logger'
-import kworkRoutes from './routes/kwork'
 
 const app = express()
 
@@ -51,7 +52,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 // Custom middleware
 app.use(loggingMiddleware)
 // Temporarily disable tenant middleware
-// app.use(tenantMiddleware);
+app.use(tenantMiddleware)
 
 // Health check endpoint
 app.use('/health', healthCheck)

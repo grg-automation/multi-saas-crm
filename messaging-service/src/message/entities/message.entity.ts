@@ -32,7 +32,11 @@ export class MessageEntity {
   @Column({ type: 'text', nullable: true })
   platformThreadId: string;
 
-  @Column('text')
+  @Column({
+    type: 'text',
+    nullable: false,
+    default: '', // Add default empty string
+  })
   content: string;
 
   @Column({ type: 'enum', enum: MessageType })

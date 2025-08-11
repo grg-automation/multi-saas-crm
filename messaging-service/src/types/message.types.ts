@@ -7,6 +7,9 @@ export enum MessageType {
   TEXT = 'TEXT',
   IMAGE = 'IMAGE',
   VIDEO = 'VIDEO',
-  AUDIO = 'AUDIO', // ADD THIS
+  AUDIO = 'AUDIO',
   DOCUMENT = 'DOCUMENT',
+  STICKER = 'STICKER',
+  LOCATION = 'LOCATION',
+  CONTACT = 'CONTACT',
 }

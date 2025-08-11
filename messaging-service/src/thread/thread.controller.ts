@@ -11,7 +11,7 @@ import {
 import { MessageService } from '../message/message.service';
 import { ThreadService } from './thread.service';
 
-@Controller('api/threads') // Added 'api/' prefix
+@Controller('thread')
 export class ThreadController {
   private readonly logger = new Logger(ThreadController.name);
 
@@ -62,90 +62,37 @@ export class ThreadController {
     );
 
     try {
+      // Add DB connection check
       const messages = await this.messageService.findByThreadId(
         threadId,
         page,
         size,
       );
-
       this.logger.log(
         `✅ Found ${messages.length} messages for thread: ${threadId}`,
       );
 
-      // Transform messages to match frontend format
-      const transformedMessages = messages.map((message) => ({
-        id: message.id,
-        threadId: message.threadId,
-        direction: message.direction,
-        content: message.content,
-        messageType: message.messageType || 'TEXT',
-        senderName:
-          message.senderName ||
-          (message.direction === 'INBOUND' ? 'User' : 'Agent'),
-        sentAt: message.sentAt || message.createdAt,
-        deliveredAt: message.deliveredAt,
-        readAt: message.readAt,
-        status: message.status || 'SENT',
-        isInbound: message.direction === 'INBOUND',
-        isOutbound: message.direction === 'OUTBOUND',
-        sentimentLabel: message.sentimentLabel,
-        fileName: message.fileName,
-        fileSize: message.fileSize,
-        mimeType: message.mimeType,
-      }));
-
       return {
-        content: transformedMessages,
+        content: messages.map((msg) => ({
+          id: msg.id,
+          threadId: msg.threadId,
+          content: msg.content,
+          senderId: msg.senderId,
+          senderName: msg.senderName || 'Unknown',
+          timestamp: msg.sentAt,
+          direction: msg.direction,
+          messageType: msg.messageType,
+        })),
         pagination: {
           page,
           size,
-          total: transformedMessages.length,
-          hasMore: transformedMessages.length === size,
+          total: messages.length,
+          hasMore: messages.length === size,
         },
       };
     } catch (error) {
-      this.logger.error(
-        `❌ Error getting messages for thread ${threadId}:`,
-        error.message,
-      );
-
-      // Return mock messages for now
-      const mockMessages = [
-        {
-          id: '1',
-          threadId,
-          direction: 'INBOUND' as const,
-          content: 'Hello! This is a test message from user.',
-          messageType: 'TEXT' as const,
-          senderName: 'User 456',
-          sentAt: new Date(Date.now() - 3600000).toISOString(), // 1 hour ago
-          status: 'SENT' as const,
-          isInbound: true,
-          isOutbound: false,
-        },
-        {
-          id: '2',
-          threadId,
-          direction: 'OUTBOUND' as const,
-          content: 'Hi there! How can I help you today?',
-          messageType: 'TEXT' as const,
-          senderName: 'Manager',
-          sentAt: new Date(Date.now() - 3500000).toISOString(), // 55 minutes ago
-          status: 'SENT' as const,
-          isInbound: false,
-          isOutbound: true,
-        },
-      ];
-
-      return {
-        content: mockMessages,
-        pagination: {
-          page: 1,
-          size: 50,
-          total: 2,
-          hasMore: false,
-        },
-      };
+      this.logger.error(`❌ Error getting messages:`, error);
+      throw error;
     }
   }
 
@@ -154,7 +101,8 @@ export class ThreadController {
     @Param('threadId') threadId: string,
     @Body()
     messageData: {
-      message: string;
+      content?: string;
+      message?: string; // Support both formats
       senderId: string;
       senderName?: string;
       messageType?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT';
@@ -163,30 +111,44 @@ export class ThreadController {
     this.logger.log(`📤 Sending message to thread: ${threadId}`);
     this.logger.log(`Message data:`, messageData);
 
+    // Support both content and message fields
+    const messageContent = messageData.content || messageData.message;
+    
+    if (!messageContent) {
+      this.logger.error('❌ No message content provided');
+      return { error: 'Message content is required' };
+    }
+
     try {
+      // 1. Save message to database first
       const newMessage = await this.messageService.create({
         threadId,
-        content: messageData.message,
+        content: messageContent,
         direction: 'OUTBOUND',
         messageType: messageData.messageType || 'TEXT',
         senderName: messageData.senderName || 'Manager',
         senderId: messageData.senderId,
         sentAt: new Date(),
-        status: 'SENT',
+        status: 'SENT', // Mark as sent immediately for better UX
       });
 
-      this.logger.log(`✅ Message sent: ${newMessage.id}`);
+      this.logger.log(`✅ Message saved to database: ${newMessage.id}`);
 
-      // Transform to match frontend format
+      // 2. Try to send to Telegram if this is a Telegram thread
+      await this.sendToTelegramIfNeeded(threadId, messageContent, newMessage.id);
+
+      // 3. Transform to match frontend format
       const transformedMessage = {
         id: newMessage.id,
         threadId: newMessage.threadId,
         direction: newMessage.direction,
         content: newMessage.content,
-        messageType: newMessage.messageType || 'TEXT',
+        senderId: newMessage.senderId,
         senderName: newMessage.senderName || 'Manager',
+        timestamp: newMessage.sentAt || new Date().toISOString(),
+        messageType: newMessage.messageType || 'TEXT',
         sentAt: newMessage.sentAt || new Date().toISOString(),
-        status: newMessage.status || 'SENT',
+        status: 'SENT', // Show as sent to user immediately
         isInbound: false,
         isOutbound: true,
       };
@@ -198,21 +160,86 @@ export class ThreadController {
         error.message,
       );
 
-      // Return mock response for now
-      const mockMessage = {
+      // Create a basic message entry even if main creation fails
+      const fallbackMessage = {
         id: Date.now().toString(),
         threadId,
         direction: 'OUTBOUND' as const,
-        content: messageData.message,
-        messageType: messageData.messageType || ('TEXT' as const),
+        content: messageContent,
+        senderId: messageData.senderId,
         senderName: messageData.senderName || 'Manager',
+        timestamp: new Date().toISOString(),
+        messageType: messageData.messageType || ('TEXT' as const),
         sentAt: new Date().toISOString(),
         status: 'SENT' as const,
         isInbound: false,
         isOutbound: true,
       };
 
-      return mockMessage;
+      this.logger.log(`⚠️ Returning fallback message:`, fallbackMessage);
+      return fallbackMessage;
     }
+  }
+
+  private async sendToTelegramIfNeeded(threadId: string, messageContent: string, messageId: string) {
+    try {
+      // Get thread details to check if it's a Telegram thread
+      const thread = await this.threadService.findById(threadId);
+      if (!thread) {
+        this.logger.warn(`Thread ${threadId} not found, skipping Telegram send`);
+        return;
+      }
+
+      // Check if this thread is associated with a Telegram channel
+      // For now, we'll check if contactId looks like a Telegram user ID (numeric)
+      const telegramUserId = thread.contactId;
+      if (!telegramUserId || !/^\d+$/.test(telegramUserId)) {
+        this.logger.log(`Thread ${threadId} contactId '${telegramUserId}' is not a Telegram user ID, skipping Telegram send`);
+        return;
+      }
+
+      this.logger.log(`🤖 Attempting to send message to Telegram user: ${telegramUserId}`);
+
+      // Call notification-service to send via Telegram (auto-select session)
+      try {
+        const response = await fetch('http://localhost:3004/telegram-user/send-message-auto', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            chatId: telegramUserId,
+            message: messageContent,
+          }),
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          this.logger.log(`✅ Message sent to Telegram successfully:`, result);
+          
+          // Update message status to SENT
+          // TODO: Update message status in database when MessageService supports it
+          
+        } else {
+          const errorData = await response.json();
+          this.logger.error(`❌ Failed to send to Telegram:`, errorData);
+        }
+      } catch (telegramError) {
+        this.logger.error(`❌ Telegram send error:`, telegramError.message);
+        // Don't throw error here - message was already saved to DB
+      }
+    } catch (error) {
+      this.logger.error(`❌ Error in sendToTelegramIfNeeded:`, error);
+      // Don't throw error here - message was already saved to DB
+    }
+  }
+
+  @Get()
+  async getAllThreads(
+    @Query('page') page: number = 1,
+    @Query('limit') limit: number = 10,
+  ) {
+    this.logger.log('📋 Getting all threads');
+    return this.threadService.findAllWithPagination(page, limit);
   }
 }

@@ -8,26 +8,10 @@ import java.util.*
 
 @Repository
 interface UserRepository : JpaRepository<UserEntity, UUID> {
-
     fun findByEmail(email: String): UserEntity?
 
     @Query("SELECT u FROM UserEntity u WHERE u.email = :email AND u.isActive = true")
     fun findActiveByEmail(@Param("email") email: String): UserEntity?
-
-    fun findByDisplayName(displayName: String): UserEntity?
-
-    fun existsByEmail(email: String): Boolean
-
-    fun existsByDisplayName(displayName: String): Boolean
-
-    @Query("SELECT u FROM UserEntity u WHERE u.isActive = true")
-    fun findAllActive(): List<UserEntity>
-
-    @Query("SELECT u FROM UserEntity u WHERE u.isSuperuser = true")
-    fun findAllSuperusers(): List<UserEntity>
-
-    @Query("SELECT u FROM UserEntity u WHERE u.isVerified = false")
-    fun findAllUnverified(): List<UserEntity>
 
     @Query("SELECT u FROM UserEntity u WHERE " +
             "LOWER(u.firstName) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
@@ -36,12 +20,8 @@ interface UserRepository : JpaRepository<UserEntity, UUID> {
             "LOWER(u.displayName) LIKE LOWER(CONCAT('%', :search, '%'))")
     fun searchUsers(@Param("search") search: String): List<UserEntity>
 
-    fun countByIsActive(isActive: Boolean): Long
+    @Query("SELECT COUNT(u) FROM UserEntity u WHERE u.isActive = true AND u.tenantId = :tenantId")
+    fun countByIsActiveAndTenantId(isActive: Boolean, @Param("tenantId") tenantId: UUID): Long
 
-    fun countByIsVerified(isVerified: Boolean): Long
-
-    fun findByRole(role: UserRole): List<UserEntity>
-
-    @Query("SELECT u FROM UserEntity u WHERE u.role = :role AND u.isActive = true")
-    fun findActiveByRole(@Param("role") role: UserRole): List<UserEntity>
+    fun existsByEmail(email: String): Boolean
 }

@@ -1,5 +1,8 @@
 package com.backend.core.opportunity
 
+import com.backend.core.company.CompanyRepository
+import com.backend.core.contact.ContactRepository
+import com.backend.core.tenant.TenantService
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.math.BigDecimal
@@ -10,11 +13,12 @@ import java.util.*
 @Service
 @Transactional
 class OpportunityService(
-    private val opportunityRepository: OpportunityRepository
+    private val opportunityRepository: OpportunityRepository,
+    private val companyRepository: CompanyRepository,
+    private val contactRepository: ContactRepository,
+    private val tenantService: TenantService
 ) {
-
-    fun getAllOpportunities(tenantId: UUID): List<OpportunityEntity> =
-        opportunityRepository.findByTenantId(tenantId)
+    fun getAllOpportunities(tenantId: UUID): List<OpportunityEntity> = opportunityRepository.findByTenantId(tenantId)
 
     fun getOpportunityById(tenantId: UUID, opportunityId: UUID): OpportunityEntity? =
         opportunityRepository.findByTenantIdAndId(tenantId, opportunityId)
@@ -25,15 +29,6 @@ class OpportunityService(
     fun getOpportunitiesByContact(tenantId: UUID, contactId: UUID): List<OpportunityEntity> =
         opportunityRepository.findByTenantIdAndContactId(tenantId, contactId)
 
-    fun getOpportunitiesByStage(tenantId: UUID, stage: OpportunityStage): List<OpportunityEntity> =
-        opportunityRepository.findByTenantIdAndStage(tenantId, stage)
-
-    fun getOpportunitiesByType(tenantId: UUID, opportunityType: OpportunityType): List<OpportunityEntity> =
-        opportunityRepository.findByTenantIdAndOpportunityType(tenantId, opportunityType)
-
-    fun getOpportunitiesByOwner(tenantId: UUID, ownerId: UUID): List<OpportunityEntity> =
-        opportunityRepository.findByTenantIdAndOwnerId(tenantId, ownerId)
-
     fun getActiveOpportunities(tenantId: UUID): List<OpportunityEntity> =
         opportunityRepository.findActiveByTenantId(tenantId)
 
@@ -43,45 +38,39 @@ class OpportunityService(
     fun searchOpportunities(tenantId: UUID, search: String): List<OpportunityEntity> =
         opportunityRepository.searchByTenantId(tenantId, search)
 
-    fun getOpportunityCount(tenantId: UUID): Long =
-        opportunityRepository.countByTenantId(tenantId)
-
-    fun getOpportunityCountByStage(tenantId: UUID, stage: OpportunityStage): Long =
-        opportunityRepository.countByTenantIdAndStage(tenantId, stage)
+    fun getOpportunityCount(tenantId: UUID): Long = opportunityRepository.countByTenantId(tenantId)
 
     fun createOpportunity(opportunity: OpportunityEntity): OpportunityEntity {
+        tenantService.validateTenantLimits(opportunity.tenantId) // Check tenant limits
+        validateProbability(opportunity.probability)
+        opportunity.companyId?.let { if (!companyRepository.existsById(it)) throw IllegalArgumentException("Company not found") }
+        opportunity.contactId?.let { if (!contactRepository.existsById(it)) throw IllegalArgumentException("Contact not found") }
         val opportunityWithCalculatedFields = opportunity.copy(
             expectedRevenue = calculateExpectedRevenue(opportunity.amount, opportunity.probability),
             isClosed = isClosedStage(opportunity.stage),
-            isWon = opportunity.stage == OpportunityStage.CLOSED_WON
+            isWon = opportunity.stage == OpportunityEntity.OpportunityStage.CLOSED_WON
         )
         return opportunityRepository.save(opportunityWithCalculatedFields)
     }
 
     fun updateOpportunity(tenantId: UUID, opportunityId: UUID, updates: OpportunityEntity): OpportunityEntity? {
         val existing = opportunityRepository.findByTenantIdAndId(tenantId, opportunityId) ?: return null
-
+        tenantService.validateTenantLimits(tenantId) // Check tenant limits
+        validateProbability(updates.probability)
+        updates.companyId?.let { if (it != existing.companyId && !companyRepository.existsById(it)) throw IllegalArgumentException("Company not found") }
+        updates.contactId?.let { if (it != existing.contactId && !contactRepository.existsById(it)) throw IllegalArgumentException("Contact not found") }
         val updated = existing.copy(
-            name = updates.name,
+            name = updates.name.takeIf { it.isNotBlank() } ?: existing.name,
             description = updates.description,
             stage = updates.stage,
-            opportunityType = updates.opportunityType,
-            leadSource = updates.leadSource,
             amount = updates.amount,
             probability = updates.probability,
             expectedRevenue = calculateExpectedRevenue(updates.amount, updates.probability),
             closeDate = updates.closeDate,
-            actualCloseDate = if (isClosedStage(updates.stage)) LocalDate.now() else updates.actualCloseDate,
-            nextStep = updates.nextStep,
-            notes = updates.notes,
-            companyId = updates.companyId,
-            contactId = updates.contactId,
             isClosed = isClosedStage(updates.stage),
-            isWon = updates.stage == OpportunityStage.CLOSED_WON,
-            updatedAt = LocalDateTime.now(),
-            lastActivity = LocalDateTime.now()
+            isWon = updates.stage == OpportunityEntity.OpportunityStage.CLOSED_WON,
+            updatedAt = LocalDateTime.now()
         )
-
         return opportunityRepository.save(updated)
     }
 
@@ -91,51 +80,17 @@ class OpportunityService(
         return true
     }
 
-    fun updateOpportunityStage(tenantId: UUID, opportunityId: UUID, stage: OpportunityStage): OpportunityEntity? {
-        val existing = opportunityRepository.findByTenantIdAndId(tenantId, opportunityId) ?: return null
-
-        val updated = existing.copy(
-            stage = stage,
-            isClosed = isClosedStage(stage),
-            isWon = stage == OpportunityStage.CLOSED_WON,
-            actualCloseDate = if (isClosedStage(stage)) LocalDate.now() else null,
-            updatedAt = LocalDateTime.now(),
-            lastActivity = LocalDateTime.now()
-        )
-
-        return opportunityRepository.save(updated)
-    }
-
-    fun closeOpportunityAsWon(tenantId: UUID, opportunityId: UUID): OpportunityEntity? {
-        return updateOpportunityStage(tenantId, opportunityId, OpportunityStage.CLOSED_WON)
-    }
-
-    fun closeOpportunityAsLost(tenantId: UUID, opportunityId: UUID): OpportunityEntity? {
-        return updateOpportunityStage(tenantId, opportunityId, OpportunityStage.CLOSED_LOST)
-    }
-
-    fun getOpportunityAnalytics(tenantId: UUID): Map<String, Any> {
-        val totalRevenue = opportunityRepository.getTotalRevenueByTenantId(tenantId) ?: BigDecimal.ZERO
-        val weightedPipeline = opportunityRepository.getWeightedPipelineByTenantId(tenantId) ?: BigDecimal.ZERO
-        val averageDealSize = opportunityRepository.getAverageDealSizeByTenantId(tenantId) ?: BigDecimal.ZERO
-        val totalCount = opportunityRepository.countByTenantId(tenantId)
-
-        return mapOf(
-            "totalRevenue" to totalRevenue,
-            "weightedPipeline" to weightedPipeline,
-            "averageDealSize" to averageDealSize,
-            "totalOpportunities" to totalCount,
-            "wonCount" to opportunityRepository.countByTenantIdAndStage(tenantId, OpportunityStage.CLOSED_WON),
-            "lostCount" to opportunityRepository.countByTenantIdAndStage(tenantId, OpportunityStage.CLOSED_LOST),
-            "openCount" to totalCount - opportunityRepository.countByTenantIdAndStage(tenantId, OpportunityStage.CLOSED_WON) - opportunityRepository.countByTenantIdAndStage(tenantId, OpportunityStage.CLOSED_LOST)
-        )
+    private fun validateProbability(probability: Int) {
+        if (probability !in 0..100) {
+            throw IllegalArgumentException("Probability must be between 0 and 100")
+        }
     }
 
     private fun calculateExpectedRevenue(amount: BigDecimal?, probability: Int): BigDecimal? {
         return amount?.multiply(BigDecimal(probability))?.divide(BigDecimal(100))
     }
 
-    private fun isClosedStage(stage: OpportunityStage): Boolean {
-        return stage == OpportunityStage.CLOSED_WON || stage == OpportunityStage.CLOSED_LOST
+    private fun isClosedStage(stage: OpportunityEntity.OpportunityStage): Boolean {
+        return stage == OpportunityEntity.OpportunityStage.CLOSED_WON || stage == OpportunityEntity.OpportunityStage.CLOSED_LOST
     }
 }

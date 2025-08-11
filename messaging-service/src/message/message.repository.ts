@@ -13,14 +13,31 @@ export class MessageRepository {
     private readonly repo: Repository<MessageEntity>,
   ) {}
 
-  async saveMessage(message: MessageEntity): Promise<MessageEntity> {
-    this.logger.log(`💾 Saving message for thread: ${message.threadId}`);
+  async saveMessage(
+    messageData: Partial<MessageEntity>,
+  ): Promise<MessageEntity> {
     try {
-      const savedMessage = await this.repo.save(message);
-      this.logger.log(`✅ Message saved with ID: ${savedMessage.id}`);
-      return savedMessage;
+      // Validate required fields
+      if (!messageData.content) {
+        throw new Error('Message content is required');
+      }
+
+      const message = this.repo.create({
+        ...messageData,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        status: messageData.status || 'SENT',
+      });
+
+      this.logger.log('💾 Saving message:', {
+        threadId: message.threadId,
+        content: message.content,
+        direction: message.direction,
+      });
+
+      return await this.repo.save(message);
     } catch (error) {
-      this.logger.error(`❌ Error saving message:`, error.message);
+      this.logger.error('❌ Error saving message:', error.message);
       throw error;
     }
   }

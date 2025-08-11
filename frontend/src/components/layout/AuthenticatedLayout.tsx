@@ -19,19 +19,10 @@ export default function AuthenticatedLayout({
 
 	useEffect(() => {
 		const timestamp = new Date().toLocaleTimeString()
-		console.log(
-			`[${timestamp}] AUTHENTICATED LAYOUT: Layout effect, user:`,
-			user,
-			'loading:',
-			userLoading
-		)
 
 		// Only attempt redirect if not loading and no user
 		if (!userLoading && !user && !redirecting) {
 			const timestamp = new Date().toLocaleTimeString()
-			console.log(
-				`[${timestamp}] AUTHENTICATED LAYOUT: No user found, redirecting to login`
-			)
 
 			setRedirecting(true)
 
@@ -80,10 +71,6 @@ export default function AuthenticatedLayout({
 
 	// Render the authenticated layout
 	const timestamp = new Date().toLocaleTimeString()
-	console.log(
-		`[${timestamp}] AUTHENTICATED LAYOUT: Rendering layout with user:`,
-		user?.email
-	)
 
 	return (
 		<div className='min-h-screen bg-gray-50 flex'>

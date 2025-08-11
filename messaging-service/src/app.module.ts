@@ -6,6 +6,7 @@ import { MessageModule } from './message/message.module';
 import { ThreadModule } from './thread/thread.module';
 import { WebhookModule } from './webhook/webhook.module';
 import { WebSocketModule } from './websoket/websoket.module';
+import { KworkModule } from './kwork/kwork.module';
 
 @Module({
   imports: [
@@ -23,9 +24,8 @@ import { WebSocketModule } from './websoket/websoket.module';
         password: configService.get('DATABASE_PASSWORD', 'crm_password'),
         database: configService.get('DATABASE_NAME', 'crm_messaging_dev'),
         entities: ['dist/**/*.entity{.ts,.js}'],
-        // synchronize: configService.get('NODE_ENV') !== 'production',
-        synchronize: false,
-        migrationsRun: true, // Add for prod migrations
+        synchronize: true, // Enable in development
+        logging: true, // Enable SQL logging
       }),
       inject: [ConfigService],
     }),
@@ -34,6 +34,7 @@ import { WebSocketModule } from './websoket/websoket.module';
     MessageModule,
     WebhookModule,
     WebSocketModule,
+    KworkModule,
   ],
 })
 export class AppModule {}

@@ -116,6 +116,52 @@ export class TelegramUserController {
   }
 
   /**
+   * Отправить сообщение автоматически выбрав активную сессию
+   * POST /api/v1/telegram-user/send-message-auto
+   */
+  @Post('send-message-auto')
+  async sendUserMessageAuto(@Body() dto: { chatId: string; message: string; parseMode?: 'HTML' | 'Markdown' }) {
+    try {
+      this.logger.log(`Auto-sending message to chat: ${dto.chatId}`);
+      
+      // Get first active session
+      const sessions = this.telegramUserService.getAllSessions();
+      const activeSession = sessions.find(s => s.isAuthenticated && s.isConnected);
+      
+      if (!activeSession) {
+        throw new HttpException(
+          { success: false, message: 'No active Telegram sessions available' },
+          HttpStatus.BAD_REQUEST
+        );
+      }
+
+      this.logger.log(`Using auto-selected session: ${activeSession.id}`);
+      
+      const message: TelegramUserMessage = {
+        chatId: dto.chatId,
+        message: dto.message,
+        parseMode: dto.parseMode
+      };
+      
+      const result = await this.telegramUserService.sendUserMessage(activeSession.id, message);
+      
+      return {
+        success: true,
+        messageId: result.messageId || result.message_id,
+        sessionId: activeSession.id,
+        sentAt: new Date().toISOString(),
+        message: 'Message sent successfully via auto-selected session'
+      };
+    } catch (error) {
+      this.logger.error(`Failed to send auto message: ${error.message}`);
+      throw new HttpException(
+        { success: false, message: error.message },
+        HttpStatus.BAD_REQUEST
+      );
+    }
+  }
+
+  /**
    * Отправить файл от имени пользователя
    * POST /api/v1/telegram-user/send-file
    */

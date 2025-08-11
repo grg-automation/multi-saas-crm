@@ -1,5 +1,4 @@
-// lib/messaging-api.js
-const API_BASE_URL = 'http://localhost:3000'
+const API_BASE_URL = 'http://localhost:3003'
 
 class MessagingApi {
 	constructor() {
@@ -8,7 +7,8 @@ class MessagingApi {
 	}
 
 	async getThread(threadId) {
-		const url = `${this.baseURL}/api/threads/${threadId}`
+		// Change from /api/threads/ to /api/v1/thread/
+		const url = `${this.baseURL}/api/v1/thread/${threadId}`
 		console.log('🌐 Making API request to:', url)
 
 		try {
@@ -39,7 +39,8 @@ class MessagingApi {
 	}
 
 	async sendMessage(threadId, message) {
-		const url = `${this.baseURL}/api/threads/${threadId}/messages`
+		// Change from /api/threads/ to /api/v1/thread/
+		const url = `${this.baseURL}/api/v1/thread/${threadId}/messages`
 
 		try {
 			const response = await fetch(url, {
@@ -62,7 +63,8 @@ class MessagingApi {
 	}
 
 	async getMessages(threadId, page = 1, limit = 50) {
-		const url = `${this.baseURL}/api/threads/${threadId}/messages?page=${page}&limit=${limit}`
+		// Change from /api/threads/ to /api/v1/thread/
+		const url = `${this.baseURL}/api/v1/thread/${threadId}/messages?page=${page}&limit=${limit}`
 
 		try {
 			const response = await fetch(url)

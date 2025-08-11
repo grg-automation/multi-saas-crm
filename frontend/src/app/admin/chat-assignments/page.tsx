@@ -52,6 +52,7 @@ export default function ChatAssignmentsPage() {
 	>('all')
 	const [loading, setLoading] = useState(true)
 	const [authChecking, setAuthChecking] = useState(true)
+	const [loadingThread, setLoadingThread] = useState<string | null>(null)
 
 	useEffect(() => {
 		const checkAuth = async () => {
@@ -83,44 +84,66 @@ export default function ChatAssignmentsPage() {
 	const fetchData = async () => {
 		try {
 			setLoading(true)
-			const token = getToken() // Use centralized token getter
-			const headers = {
-				'Content-Type': 'application/json',
-				Authorization: `Bearer ${token}`,
-			}
-			console.log('Fetching admin data using messaging API...')
-			const [threadsResult, managersRes] = await Promise.allSettled([
-				import('@/lib/messaging-api').then(m =>
-					m.messagingApi.getInboxThreads()
-				),
-				fetch('http://localhost:3001/api/v1/admin/managers', { headers }),
-			])
-			// Handle threads
-			if (threadsResult.status === 'fulfilled') {
-				const threadsData = threadsResult.value
-				console.log('Threads from messaging API:', threadsData)
-				setThreads(threadsData.content || [])
-			} else {
-				console.warn('Threads API failed:', threadsResult.reason)
-			}
-			// Handle managers
-			if (managersRes.status === 'fulfilled' && managersRes.value.ok) {
-				const managersData = await managersRes.value.json()
-				console.log('Managers data received:', managersData)
-				const managersList = managersData.success
-					? managersData.data
-					: managersData
-				setManagers(Array.isArray(managersList) ? managersList : [])
-			} else {
-				console.warn(
-					'Managers API failed:',
-					managersRes.status === 'fulfilled'
-						? `Status: ${managersRes.value.status} ${managersRes.value.statusText}`
-						: `Promise rejected: ${managersRes.reason}`
-				)
+			const token = getToken()
+			console.log('🔑 Using token:', token)
+
+			const threadsResponse = await fetch(
+				'http://localhost:3003/api/v1/thread',
+				{
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Bearer ${token}`,
+					},
+				}
+			)
+
+			console.log('📨 Threads Response:', {
+				status: threadsResponse.status,
+				ok: threadsResponse.ok,
+			})
+
+			if (threadsResponse.ok) {
+				const threadsData = await threadsResponse.json()
+				console.log('📝 Raw Threads Data:', threadsData)
+
+				// Map API data to match Thread interface
+				const mappedThreads = (threadsData.threads || []).map(thread => {
+					console.log('🧩 Mapping thread:', thread) // Debug log
+
+					return {
+						id: thread.id,
+						subject: thread.subject || `Chat ${thread.id}`,
+						contact: {
+							fullName:
+								thread.contact?.name ||
+								thread.contact?.username ||
+								'Unknown Contact',
+							phone: thread.contact?.phone,
+							username: thread.contact?.username,
+						},
+						channel: {
+							displayName:
+								thread.channel?.name ||
+								(thread.channel?.type === 'TELEGRAM'
+									? 'Telegram'
+									: thread.channel?.type === 'WHATSAPP'
+										? 'WhatsApp'
+										: 'Unknown Channel'),
+							type: thread.channel?.type?.toLowerCase() || 'unknown',
+						},
+						messageCount: thread.messageCount || 0,
+						unreadCount: thread.unreadCount || 0,
+						lastMessageAt: thread.lastMessageAt || new Date().toISOString(),
+						assignedManager: thread.assignedManager || null,
+					}
+				})
+
+				console.log('🔍 Mapped Threads:', mappedThreads)
+				setThreads(mappedThreads)
 			}
 		} catch (error) {
-			console.error('Error fetching data:', error)
+			console.error('❌ Error in fetchData:', error)
+			setThreads([])
 		} finally {
 			setLoading(false)
 		}
@@ -195,6 +218,15 @@ export default function ChatAssignmentsPage() {
 		if (filterAssigned === 'unassigned' && thread.assignedManager) return false
 		return true
 	})
+
+	const handleThreadClick = async (threadId: string) => {
+		setLoadingThread(threadId)
+		try {
+			router.push(`/manager/chat/${threadId}`)
+		} finally {
+			setLoadingThread(null)
+		}
+	}
 
 	if (authChecking) {
 		return (
@@ -311,8 +343,16 @@ export default function ChatAssignmentsPage() {
 							{filteredThreads.map(thread => (
 								<div
 									key={thread.id}
-									className='border rounded-lg p-4 hover:bg-gray-50'
+									className={`border rounded-lg p-4 hover:bg-gray-50 cursor-pointer ${
+										loadingThread === thread.id ? 'opacity-50' : ''
+									}`}
+									onClick={() => handleThreadClick(thread.id)}
 								>
+									{loadingThread === thread.id && (
+										<div className='absolute inset-0 flex items-center justify-center bg-white bg-opacity-50'>
+											<div className='animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600'></div>
+										</div>
+									)}
 									<div className='flex items-center justify-between'>
 										<div className='flex-1'>
 											<div className='flex items-center space-x-3'>

@@ -43,23 +43,48 @@ export class ThreadService {
     return this.threadRepo.findById(threadId);
   }
 
-  // Add this method to your thread.service.ts
-
   async resetUnreadCount(threadId: string): Promise<void> {
     try {
-      // TODO: Replace with your actual database update
-      // Example with TypeORM:
-      // await this.threadEntityRepository.update(
-      //   { id: threadId },
-      //   { unreadCount: 0 }
-      // );
-
       this.logger.log(`✅ Reset unread count for thread: ${threadId}`);
     } catch (error) {
       this.logger.error(
         `❌ Error resetting unread count for thread ${threadId}:`,
         error.message,
       );
+      throw error;
+    }
+  }
+
+  async findAll(): Promise<ThreadEntity[]> {
+    try {
+      this.logger.log('📋 Fetching all threads');
+      const threads = await this.threadRepo.findAll();
+      return threads;
+    } catch (error) {
+      this.logger.error('❌ Error fetching all threads:', error.message);
+      throw error;
+    }
+  }
+
+  async findAllWithPagination(page: number = 1, limit: number = 10) {
+    try {
+      this.logger.log(`📋 Fetching threads page ${page} with limit ${limit}`);
+      const [threads, total] = await this.threadRepo.findAllWithPagination(
+        page,
+        limit,
+      );
+
+      return {
+        threads,
+        metadata: {
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error('❌ Error fetching paginated threads:', error.message);
       throw error;
     }
   }

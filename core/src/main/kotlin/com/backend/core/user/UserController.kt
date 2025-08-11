@@ -1,6 +1,5 @@
 package com.backend.core.user
 
-import com.backend.core.base.BaseController
 import jakarta.validation.Valid
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
@@ -10,99 +9,54 @@ import java.util.*
 @RequestMapping("/users")
 class UserController(
     private val userService: UserService
-) : BaseController() {
-
+) {
     @GetMapping("/{userId}")
     fun getUserProfile(
-        @PathVariable userId: UUID
+        @PathVariable userId: UUID,
+        @RequestHeader("X-Tenant-ID") tenantId: UUID
     ): ResponseEntity<UserEntity> {
-        return try {
-            val user = userService.findById(userId)
-                ?: return ResponseEntity.notFound().build()
-
-            ResponseEntity.ok(user)
-        } catch (e: Exception) {
-            ResponseEntity.badRequest().build()
-        }
+        return userService.findById(userId)?.let { ResponseEntity.ok(it) }
+            ?: ResponseEntity.notFound().build()
     }
 
     @PutMapping("/{userId}")
     fun updateUserProfile(
         @PathVariable userId: UUID,
-        @Valid @RequestBody updates: UserProfileUpdateRequest
+        @Valid @RequestBody updates: UserProfileUpdateRequest,
+        @RequestHeader("X-Tenant-ID") tenantId: UUID
     ): ResponseEntity<UserEntity> {
-        return try {
-            val updatedUser = userService.updateProfile(userId, updates)
-                ?: return ResponseEntity.notFound().build()
-
-            ResponseEntity.ok(updatedUser)
-        } catch (e: Exception) {
-            ResponseEntity.badRequest().build()
-        }
+        return userService.updateProfile(userId, updates)?.let { ResponseEntity.ok(it) }
+            ?: ResponseEntity.notFound().build()
     }
 
-    @PutMapping("/{userId}/settings")
-    fun updateUserSettings(
+    @PutMapping("/{userId}/avatar")
+    fun updateAvatar(
         @PathVariable userId: UUID,
-        @Valid @RequestBody settings: UserSettingsUpdateRequest
-    ): ResponseEntity<UserEntity> {
-        return try {
-            val updatedUser = userService.updateSettings(userId, settings)
-                ?: return ResponseEntity.notFound().build()
-
-            ResponseEntity.ok(updatedUser)
-        } catch (e: Exception) {
-            ResponseEntity.badRequest().build()
-        }
-    }
-
-    @PostMapping("/{userId}/avatar")
-    fun uploadAvatar(
-        @PathVariable userId: UUID,
-        @RequestBody avatarData: Map<String, String>
+        @RequestParam avatarUrl: String,
+        @RequestHeader("X-Tenant-ID") tenantId: UUID
     ): ResponseEntity<Map<String, String>> {
-        return try {
-            val avatarUrl = avatarData["avatarUrl"]
-                ?: return ResponseEntity.badRequest().body(mapOf("error" to "Avatar URL required"))
-
-            userService.updateAvatar(userId, avatarUrl)
-            ResponseEntity.ok(mapOf(
-                "message" to "Avatar uploaded successfully",
-                "avatarUrl" to avatarUrl,
-                "userId" to userId.toString()
-            ))
-        } catch (e: Exception) {
-            ResponseEntity.badRequest().body(mapOf("error" to "Failed to upload avatar"))
-        }
+        return userService.updateAvatar(userId, avatarUrl)?.let {
+            ResponseEntity.ok(mapOf("message" to "Avatar updated", "avatarUrl" to avatarUrl))
+        } ?: ResponseEntity.badRequest().body(mapOf("error" to "User not found"))
     }
 
     @DeleteMapping("/{userId}/avatar")
     fun deleteAvatar(
-        @PathVariable userId: UUID
+        @PathVariable userId: UUID,
+        @RequestHeader("X-Tenant-ID") tenantId: UUID
     ): ResponseEntity<Map<String, String>> {
-        return try {
-            userService.removeAvatar(userId)
-            ResponseEntity.ok(mapOf(
-                "message" to "Avatar deleted successfully",
-                "userId" to userId.toString()
-            ))
-        } catch (e: Exception) {
-            ResponseEntity.badRequest().body(mapOf("error" to "Failed to delete avatar"))
-        }
+        return userService.removeAvatar(userId)?.let {
+            ResponseEntity.ok(mapOf("message" to "Avatar deleted"))
+        } ?: ResponseEntity.badRequest().body(mapOf("error" to "User not found"))
     }
 
     @DeleteMapping("/{userId}")
     fun deactivateUser(
-        @PathVariable userId: UUID
+        @PathVariable userId: UUID,
+        @RequestHeader("X-Tenant-ID") tenantId: UUID
     ): ResponseEntity<Map<String, String>> {
-        return try {
-            userService.deactivateUser(userId)
-            ResponseEntity.ok(mapOf(
-                "message" to "User deactivated successfully",
-                "userId" to userId.toString()
-            ))
-        } catch (e: Exception) {
-            ResponseEntity.badRequest().body(mapOf("error" to "Failed to deactivate user"))
-        }
+        return userService.deactivateUser(userId)?.let {
+            ResponseEntity.ok(mapOf("message" to "User deactivated"))
+        } ?: ResponseEntity.badRequest().body(mapOf("error" to "User not found"))
     }
 }

@@ -6,6 +6,7 @@ import { ThreadModule } from '../thread/thread.module';
 import { WebSocketModule } from '../websoket/websoket.module';
 import { TelegramMessageAdapter } from './adapters/telegram-message.adapter';
 import { WhatsAppMessageAdapter } from './adapters/whatsapp-message.adapter';
+import { KworkMessageAdapter } from './adapters/kwork-message.adapter';
 import { MessageEntity } from './entities/message.entity';
 import { MessageRepository } from './message.repository';
 import { MessageService } from './message.service';
@@ -25,6 +26,7 @@ import { MessageService } from './message.service';
     MessageRepository,
     TelegramMessageAdapter,
     WhatsAppMessageAdapter,
+    KworkMessageAdapter,
   ],
   exports: [MessageService, MessageRepository],
 })

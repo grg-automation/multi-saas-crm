@@ -6,6 +6,7 @@ import { ChannelType } from '../types/channel.types';
 import { MessagingWebSocketGateway } from '../websoket/websoket.gateway';
 import { TelegramMessageAdapter } from './adapters/telegram-message.adapter';
 import { WhatsAppMessageAdapter } from './adapters/whatsapp-message.adapter';
+import { KworkMessageAdapter, KworkMessageData } from './adapters/kwork-message.adapter';
 import { MessageEntity } from './entities/message.entity';
 import { MessageRepository } from './message.repository';
 
@@ -19,6 +20,7 @@ export class MessageService {
     private readonly threadService: ThreadService,
     private readonly telegramAdapter: TelegramMessageAdapter,
     private readonly whatsAppAdapter: WhatsAppMessageAdapter,
+    private readonly kworkAdapter: KworkMessageAdapter,
     private readonly webSocketGateway: MessagingWebSocketGateway,
   ) {}
 
@@ -83,11 +85,25 @@ export class MessageService {
       const savedMessage = await this.messageRepo.saveMessage(messageEntity);
       this.logger.log(`✅ Message created with ID: ${savedMessage.id}`);
 
-      // Send WebSocket notification for real-time updates
+      // Only broadcast to session for general notifications
       this.webSocketGateway.sendToSession('tenant_default', {
         type: 'new_message',
         data: savedMessage,
       });
+
+      // Don't broadcast to thread here - let the frontend WebSocket handle real-time for sent messages
+      // Only broadcast to thread for INBOUND messages (from Telegram/WhatsApp)
+      if (messageData.direction === 'INBOUND') {
+        this.webSocketGateway.broadcastToThread(messageData.threadId, {
+          id: savedMessage.id,
+          threadId: messageData.threadId,
+          content: savedMessage.content,
+          senderId: savedMessage.senderId,
+          senderName: savedMessage.senderName,
+          timestamp: savedMessage.sentAt,
+          direction: 'inbound'
+        });
+      }
 
       return savedMessage;
     } catch (error) {
@@ -144,12 +160,14 @@ export class MessageService {
       const chatId = message.chat.id.toString();
       const userId = message.from.id.toString();
 
+      // 1. Get or create channel
       const channel = await this.channelService.getOrCreateChannel(
         tenantId,
-        ChannelType.TELEGRAM, // Use enum
+        ChannelType.TELEGRAM,
         chatId,
       );
 
+      // 2. Get or create thread
       const thread = await this.threadService.createOrUpdateThread(
         tenantId,
         channel.id,
@@ -157,28 +175,44 @@ export class MessageService {
         userId,
       );
 
+      // 3. Create message entity
       const messageEntity = this.telegramAdapter.telegramToMessage(
         message,
         tenantId,
         thread.id,
       );
 
-      // Save message
-      await this.messageRepo.saveMessage(messageEntity);
+      // 4. Save message - Add logging here
+      console.log('💾 Saving Telegram message:', messageEntity);
+      const savedMessage = await this.messageRepo.saveMessage(messageEntity);
+      console.log('✅ Message saved:', savedMessage);
 
+      // 5. Update thread unread count
       await this.threadService.incrementUnreadCount(
         thread.id,
         messageEntity.sentAt,
       );
 
-      await this.forwardToCrm(messageEntity);
-
+      // 6. Send WebSocket notification to both session and thread
       this.webSocketGateway.sendToSession(`tenant_${tenantId || 'default'}`, {
         type: 'new_message',
         data: messageEntity,
       });
+
+      // 7. Also broadcast to specific thread for real-time chat
+      this.webSocketGateway.broadcastToThread(thread.id, {
+        id: savedMessage.id,
+        threadId: thread.id,
+        content: messageEntity.content,
+        senderId: messageEntity.senderId,
+        senderName: messageEntity.senderName,
+        timestamp: messageEntity.sentAt,
+        direction: 'inbound'
+      });
+
+      this.logger.log(`✅ Telegram message processed and broadcasted to thread: ${thread.id}`);
     } catch (error) {
-      this.logger.error('Telegram processing failed', error);
+      this.logger.error('❌ Telegram processing failed:', error);
       throw error;
     }
   }
@@ -229,6 +263,74 @@ export class MessageService {
       });
     } catch (error) {
       this.logger.error('WhatsApp processing failed', error);
+      throw error;
+    }
+  }
+
+  async processKworkMessage(messageData: KworkMessageData, tenantId: string | null) {
+    try {
+      this.logger.log(`🔧 Processing Kwork message: ${messageData.id}`);
+
+      // Get or create Kwork channel
+      const channel = await this.channelService.getOrCreateChannel(
+        tenantId,
+        ChannelType.KWORK,
+        'kwork_integration'
+      );
+
+      // Extract contact info
+      const contactInfo = this.kworkAdapter.extractContactInfo(messageData);
+
+      // Get or create thread
+      const thread = await this.threadService.createOrUpdateThread(
+        tenantId,
+        channel.id,
+        contactInfo.contactId,
+        messageData.dialog_id || messageData.order_id || messageData.id,
+      );
+
+      // Adapt message
+      const adaptedMessage = await this.kworkAdapter.adapt(messageData, tenantId);
+      const messageEntity = new MessageEntity();
+      Object.assign(messageEntity, adaptedMessage);
+      messageEntity.threadId = thread.id;
+
+      // Save message
+      await this.messageRepo.saveMessage(messageEntity);
+      this.logger.log(`✅ Kwork message saved: ${messageEntity.id}`);
+
+      // Update thread unread count
+      await this.threadService.incrementUnreadCount(
+        thread.id,
+        messageEntity.sentAt,
+      );
+
+      // Broadcast to WebSocket clients (only INBOUND messages to avoid duplicates)
+      if (messageEntity.direction === 'INBOUND') {
+        this.logger.log(`📡 Broadcasting Kwork message to thread_${thread.id}`);
+        this.webSocketGateway.broadcastToThread(thread.id, {
+          type: 'new_message',
+          data: {
+            id: messageEntity.id,
+            threadId: messageEntity.threadId,
+            content: messageEntity.content,
+            senderId: messageEntity.senderId,
+            senderName: messageEntity.senderName,
+            timestamp: messageEntity.sentAt,
+            direction: messageEntity.direction.toLowerCase(),
+            messageType: messageEntity.messageType,
+          },
+        });
+      }
+
+      // Forward to CRM for opportunity/contact sync
+      // await this.forwardToCrm(messageEntity);
+
+      this.logger.log(`✅ Kwork message processing completed: ${messageData.id}`);
+      return messageEntity;
+
+    } catch (error) {
+      this.logger.error(`❌ Error processing Kwork message ${messageData.id}:`, error.message);
       throw error;
     }
   }

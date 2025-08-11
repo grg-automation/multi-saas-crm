@@ -70,4 +70,29 @@ export class ThreadRepository {
   ): Promise<void> {
     await this.repo.update({ id: threadId }, { status });
   }
+
+  async findAll(): Promise<ThreadEntity[]> {
+    return this.repo.find({
+      order: {
+        lastMessageAt: 'DESC',
+        createdAt: 'DESC',
+      },
+      relations: ['channel'], // Include channel relationship if it exists
+    });
+  }
+
+  async findAllWithPagination(
+    page: number = 1,
+    limit: number = 10,
+  ): Promise<[ThreadEntity[], number]> {
+    return this.repo.findAndCount({
+      order: {
+        lastMessageAt: 'DESC',
+        createdAt: 'DESC',
+      },
+      take: limit,
+      skip: (page - 1) * limit,
+      relations: ['channel'],
+    });
+  }
 }
