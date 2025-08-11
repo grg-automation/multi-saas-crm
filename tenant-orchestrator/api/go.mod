@@ -1,4 +1,4 @@
-module github.com/rezenkai/multi-saas-crm/tenant-orchestrator/api
+module github.com/grg-automation/multi-saas-crm/tenant-orchestrator/api
 
 go 1.24.1
 

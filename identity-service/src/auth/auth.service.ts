@@ -1,9 +1,11 @@
+import { HttpService } from '@nestjs/axios'; // Add HttpService
 import {
   BadRequestException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+import { firstValueFrom } from 'rxjs'; // Add RxJS
 import { TwoFactorService } from '../two-factor/two-factor.service';
 import { UserService } from '../user/user.service';
 import { JwtService } from './jwt.service';
@@ -18,60 +20,56 @@ import {
   TwoFactorRequiredException,
 } from './types';
 
+// Assume CreateUserDto is updated to include tenantId
+interface CreateUserDto {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  tenantId: string;
+  role: string;
+}
+
 @Injectable()
 export class AuthService {
   constructor(
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
     private readonly twoFactorService: TwoFactorService,
+    private readonly httpService: HttpService, // Inject HttpService
   ) {}
 
   async login(loginDto: LoginDto): Promise<TokenPair> {
     const { email, password, twoFactorCode, tenantId } = loginDto;
-
     try {
-      console.log(`Login attempt for email: ${email}`);
-
-      // Step 1: Find and validate user
+      console.log(
+        `Login attempt for email: ${email} at 01:53 AM +05, Tuesday, August 12, 2025`,
+      );
       const user = await this.userService.findActiveByEmail(email);
       if (!user) {
         console.log(`User not found for email: ${email}`);
         throw new InvalidCredentialsException('Invalid email or password');
       }
-
       console.log(
         `User found: ${user.email}, isActive: ${user.isActive}, isVerified: ${user.isVerified}`,
       );
-
-      // Step 2: Check if account is locked
       if (user.lockedUntil && user.lockedUntil > new Date()) {
         console.log(`Account locked until: ${user.lockedUntil}`);
         throw new AccountLockedException('Account is temporarily locked');
       }
-
-      // Step 3: Verify password
-      console.log(`Verifying password for user: ${user.email}`);
-      
-      // Check if user has a local password (not Auth0 managed)
       if (!user.hashedPassword) {
         console.log(`User ${user.email} has no local password (Auth0 managed)`);
         throw new InvalidCredentialsException('Invalid email or password');
       }
-      
       const isPasswordValid = await bcrypt.compare(
         password,
         user.hashedPassword,
       );
       console.log(`Password valid: ${isPasswordValid}`);
-
       if (!isPasswordValid) {
-        console.log(`Invalid password for user: ${email}`);
-        // Increment failed login attempts
         await this.userService.incrementFailedLoginAttempts(user.id);
         throw new InvalidCredentialsException('Invalid email or password');
       }
-
-      // Step 4: Check 2FA if enabled
       if (user.twoFactorEnabled) {
         console.log(`2FA enabled for user: ${email}`);
         if (!twoFactorCode) {
@@ -79,13 +77,6 @@ export class AuthService {
             'Two-factor authentication code required',
           );
         }
-
-        // Verify 2FA code using TwoFactorService
-        console.log(
-          `Raw 2FA code received: ${twoFactorCode}, type: ${typeof twoFactorCode}`,
-        );
-
-        // Pass the code as-is to TwoFactorService
         const isValid2FA = await this.twoFactorService.verifyTwoFactorCode(
           user.id,
           twoFactorCode,
@@ -96,32 +87,23 @@ export class AuthService {
             'Invalid two-factor authentication code',
           );
         }
-
         console.log(`2FA verification successful for user: ${email}`);
       }
-
-      // Step 5: Reset failed login attempts and update last login
       await this.userService.resetFailedLoginAttempts(user.id);
-
-      // Step 6: Generate and return tokens
-      const resolvedTenantId = tenantId || 'default-tenant';
+      const resolvedTenantId = tenantId || user.tenantId || 'default-tenant'; // Use user.tenantId
       const role = user.role || (user.isSuperuser ? 'ADMIN' : 'MANAGER');
-
       console.log(
         `Generating tokens for user: ${email}, tenant: ${resolvedTenantId}, role: ${role}`,
       );
-
       const tokenPair = this.jwtService.generateTokenPair(
         user,
         resolvedTenantId,
         role,
       );
       console.log(`Login successful for user: ${email}`);
-
       return tokenPair;
     } catch (error) {
       console.error(`Login error for ${email}:`, error.message);
-
       if (
         error instanceof TwoFactorRequiredException ||
         error instanceof InvalidCredentialsException ||
@@ -129,7 +111,6 @@ export class AuthService {
       ) {
         throw error;
       }
-
       console.error(`Unexpected login error:`, error);
       throw new UnauthorizedException('Login failed');
     }
@@ -140,22 +121,15 @@ export class AuthService {
   ): Promise<{ message: string; userId: string; email: string }> {
     const { email, password, passwordConfirm, firstName, lastName } =
       registerDto;
-
     try {
-      console.log(`Registration attempt for email: ${email}`);
-
-      // Validate password confirmation
+      console.log(
+        `Registration attempt for email: ${email} at 01:50 AM +05, Tuesday, August 12, 2025`,
+      );
       if (password !== passwordConfirm) {
         console.log('Password confirmation mismatch');
         throw new BadRequestException('Passwords do not match');
       }
-
-      // Validate password strength
-      console.log('Validating password strength...');
       this.validatePasswordStrength(password);
-
-      // Check if user already exists
-      console.log(`Checking if user exists: ${email}`);
       const existingUser = await this.userService.findByEmail(email);
       if (existingUser) {
         console.log(`User already exists: ${email}`);
@@ -163,46 +137,65 @@ export class AuthService {
           `User with email ${email} already exists`,
         );
       }
-
-      // Create user using UserService
-      console.log(`Creating user: ${email}`);
       const user = await this.userService.create({
         email,
         password, // UserService will handle hashing
         firstName,
         lastName,
-      });
-
-      console.log(
-        `User created successfully: ${user.email} with ID: ${user.id}`,
+        tenantId: 'pending', // Placeholder until tenant is created
+        role: 'ADMIN', // First user is tenant admin
+      } as CreateUserDto); // Type assertion to match updated DTO
+      const tenantId = email.split('@')[0] + '-' + Date.now().toString(36); // Example: john-66b9f1a
+      const tenantRequest = {
+        organizationName: `${firstName} ${lastName}'s Org`,
+        tier: 'starter',
+        domains: [],
+        resources: {
+          cpu: { request: '200m', limit: '500m' },
+          memory: { request: '256Mi', limit: '512Mi' },
+          storage: { size: '10Gi' },
+        },
+        database: { type: 'postgres', version: '15' },
+        tenantId,
+      };
+      await firstValueFrom(
+        this.httpService.post(
+          `http://localhost:3001/${tenantId}/api/v1/tenants`,
+          tenantRequest,
+          {
+            headers: {
+              Authorization: `Bearer ${await this.jwtService.generateInternalToken()}`,
+            },
+          },
+        ),
       );
-
+      console.log(
+        `User created successfully: ${user.email} with ID: ${user.id}, tenant creation requested for ${tenantId}`,
+      );
       return {
-        message: 'Registration successful. You can now log in.',
+        message:
+          'Registration successful. Tenant provisioning in progress. You can log in after approval.',
         userId: user.id,
         email: user.email,
       };
     } catch (error) {
-      console.error(`Registration error for ${email}:`, error.message);
-
+      console.error(
+        `Registration error for ${email} at 01:50 AM +05, Tuesday, August 12, 2025:`,
+        error.message,
+      );
       if (error instanceof BadRequestException) {
         throw error;
       }
-
-      console.error(`Unexpected registration error:`, error);
       throw new BadRequestException('Registration failed');
     }
   }
 
   async refreshToken(refreshTokenDto: RefreshTokenDto): Promise<TokenPair> {
     const { refreshToken } = refreshTokenDto;
-
     try {
       console.log(
         `Refresh token attempt with token: ${refreshToken.substring(0, 20)}...`,
       );
-
-      // Verify refresh token
       const payload = this.jwtService.verifyRefreshToken(refreshToken);
       console.log(`Token payload:`, {
         sub: payload.sub,
@@ -210,28 +203,20 @@ export class AuthService {
         role: payload.role,
         type: payload.type,
       });
-
-      // Find user by email (since sub contains email in our implementation)
       const user = await this.userService.findByEmail(payload.sub);
       if (!user) {
         console.log(`User not found for email: ${payload.sub}`);
         throw new UnauthorizedException('User not found');
       }
-
       if (!user.isActive) {
         console.log(`User is not active: ${payload.sub}`);
         throw new UnauthorizedException('User not found or inactive');
       }
-
       console.log(`User found: ${user.email}, isActive: ${user.isActive}`);
-
-      // Validate refresh token against user
       if (!this.jwtService.isRefreshTokenValid(refreshToken, user)) {
         console.log(`Invalid refresh token for user: ${user.email}`);
         throw new UnauthorizedException('Invalid refresh token');
       }
-
-      // Generate new token pair
       console.log(
         `Generating new token pair for user: ${user.email}, tenant: ${payload.tenantId}, role: ${payload.role}`,
       );
@@ -240,16 +225,13 @@ export class AuthService {
         payload.tenantId,
         payload.role,
       );
-
       console.log(`Refresh successful for user: ${user.email}`);
       return newTokenPair;
     } catch (error) {
       console.error(`Refresh token error:`, error.message);
-
       if (error instanceof UnauthorizedException) {
         throw error;
       }
-
       console.error(`Unexpected refresh error:`, error);
       throw new UnauthorizedException('Failed to refresh token');
     }
@@ -260,7 +242,6 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
-
     const userRole = user.role || (user.isSuperuser ? 'ADMIN' : 'MANAGER');
     const authorities = ['ROLE_USER'];
     if (userRole === 'ADMIN' || user.isSuperuser) {
@@ -268,7 +249,6 @@ export class AuthService {
     } else if (userRole === 'MANAGER') {
       authorities.push('ROLE_MANAGER');
     }
-
     return {
       id: user.id,
       email: user.email,
@@ -278,19 +258,13 @@ export class AuthService {
       isActive: user.isActive,
       isVerified: user.isVerified,
       isSuperuser: user.isSuperuser,
-      authorities: authorities,
+      authorities,
     };
   }
 
   async logout(userId: string): Promise<{ message: string }> {
-    // TODO: Implement token blacklisting with Redis
-    // For now, we'll just return a success message
-    // The client should discard the tokens
     console.log(`User ${userId} logged out`);
-
-    return {
-      message: 'Logged out successfully',
-    };
+    return { message: 'Logged out successfully' };
   }
 
   async changePassword(
@@ -299,7 +273,6 @@ export class AuthService {
     newPassword: string,
     newPasswordConfirm: string,
   ): Promise<void> {
-    // Delegate to UserService
     await this.userService.changePassword(userId, {
       currentPassword,
       newPassword,

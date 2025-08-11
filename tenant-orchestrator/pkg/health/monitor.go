@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	tenantv1alpha1 "github.com/grg-automation/multi-saas-crm/tenant-orchestrator/api/v1alpha1"
+	"github.com/grg-automation/multi-saas-crm/tenant-orchestrator/pkg/discovery"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	tenantv1alpha1 "github.com/rezenkai/multi-saas-crm/tenant-orchestrator/api/v1alpha1"
-	"github.com/rezenkai/multi-saas-crm/tenant-orchestrator/pkg/discovery"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"

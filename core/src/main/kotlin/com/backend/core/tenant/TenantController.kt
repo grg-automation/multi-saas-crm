@@ -31,7 +31,7 @@ class TenantController(
                     displayName = tenant.displayName,
                     status = if (tenant.isActive) "active" else "inactive",
                     subscriptionPlan = tenant.subscriptionPlan.name.lowercase(),
-                    isTrial = tenant.isTrial,
+                    isTrial = tenant.isTrial ?: true,
                     trialEndsAt = tenant.trialEndsAt,
                     maxUsers = tenant.maxUsers,
                     maxCompanies = tenant.maxCompanies,
@@ -52,16 +52,13 @@ class TenantController(
         @RequestHeader("x-service-auth", required = false) serviceAuth: String?,
         @RequestHeader("X-Tenant-ID") requestTenantId: String
     ): ResponseEntity<TenantUsageResponse> {
-
         // Validate internal service authentication OR same tenant
         if (serviceAuth != "gateway-internal" && tenantId != requestTenantId) {
             return ResponseEntity.status(403).build()
         }
-
         return try {
             val tenantUUID = UUID.fromString(tenantId)
             val usage = tenantService.getTenantUsage(tenantUUID)
-
             ResponseEntity.ok(TenantUsageResponse(
                 tenantId = tenantId,
                 activeUsers = usage.activeUserCount,
@@ -91,7 +88,7 @@ class TenantController(
                         displayName = tenant.displayName,
                         status = if (tenant.isActive) "active" else "inactive",
                         subscriptionPlan = tenant.subscriptionPlan.name.lowercase(),
-                        isTrial = tenant.isTrial,
+                        isTrial = tenant.isTrial ?: true,
                         trialEndsAt = tenant.trialEndsAt,
                         maxUsers = tenant.maxUsers,
                         maxCompanies = tenant.maxCompanies,
@@ -122,7 +119,7 @@ data class TenantResponse(
     val displayName: String,
     val status: String,
     val subscriptionPlan: String,
-    val isTrial: Boolean,
+    val isTrial: Boolean?,
     val trialEndsAt: java.time.LocalDateTime?,
     val maxUsers: Int,
     val maxCompanies: Int,

@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@auth0/nextjs-auth0": "^4.8.0",
+    "@nestjs/axios": "^4.0.1",
     "@nestjs/bull": "^11.0.2",
     "@nestjs/cache-manager": "^3.0.1",
     "@nestjs/common": "^11.0.1",

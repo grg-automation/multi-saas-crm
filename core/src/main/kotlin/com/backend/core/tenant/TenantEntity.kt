@@ -51,7 +51,7 @@ data class TenantEntity(
     val isActive: Boolean = true,
 
     @Column(name = "is_trial")
-    val isTrial: Boolean = true,
+    val isTrial: Boolean? = true,
 
     @Column(name = "trial_ends_at")
     val trialEndsAt: LocalDateTime? = LocalDateTime.now().plusDays(30),

@@ -88,6 +88,27 @@ app.use(
 	})
 )
 
+// ===== TENANT CREATION ROUTE =====
+app.post(
+	'/:tenantId/api/v1/tenants',
+	authMiddleware, // Ensure internal auth
+	(req, res, next) => {
+		req.headers['X-Tenant-ID'] = req.params.tenantId // Pass tenantId to downstream
+		next()
+	},
+	createProxyMiddleware({
+		target: serviceRegistry.getService('tenantOrchestrator').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/:tenantId/api/v1/tenants': '/api/v1/tenants', // Strip tenantId for orchestrator
+		},
+		onError: (err, req, res) => {
+			logger.error('Tenant orchestrator proxy error:', err)
+			res.status(503).json({ error: 'Tenant orchestrator unavailable' })
+		},
+	})
+)
+
 // ===== PROTECTED ROUTES (REQUIRE AUTH + TENANT) =====
 // Apply auth and tenant middleware to all protected routes
 app.use('/api/v1', authMiddleware, tenantMiddleware, tenantRateLimit)
@@ -246,6 +267,37 @@ app.use(
 		},
 	})
 )
+
+app.use(
+	'/api/v1/tenants',
+	validateTenantLimits('tenants'), // Optional: Add if tenant limits apply
+	createProxyMiddleware({
+		target: serviceRegistry.getService('crm').url,
+		changeOrigin: true,
+		pathRewrite: {
+			'^/api/v1/tenants': '/api/v1/tenants', // Preserve the full path
+		},
+		onError: (err, req, res) => {
+			logger.error('Tenants service proxy error:', err)
+			res.status(503).json({ error: 'Tenants service unavailable' })
+		},
+	})
+)
+
+// ===== TENANT INFORMATION ENDPOINT =====
+app.get('/:tenantId/api/v1/tenant/current', (req: any, res) => {
+	if (!req.tenant) {
+		return res.status(400).json({ error: 'No tenant context' })
+	}
+	res.json({
+		tenant: req.tenant,
+		user: {
+			id: req.user.id,
+			email: req.user.email,
+			role: req.user.role,
+		},
+	})
+})
 
 // ===== KWORK INTEGRATION =====
 app.use('/api/v1/kwork', kworkRoutes)

@@ -1,3 +1,4 @@
+// jwt.service.ts
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService as NestJwtService } from '@nestjs/jwt';
@@ -13,13 +14,12 @@ export class JwtService {
 
   generateAccessToken(user: User, tenantId: string, role: string): string {
     const claims = {
-      sub: user.id, // Using user ID as subject
-      email: user.email, // Include email for compatibility
-      tenant_id: tenantId, // Snake case to match Kotlin
+      sub: user.id,
+      email: user.email,
+      tenant_id: tenantId,
       role: role,
       type: 'access',
     };
-
     return this.nestJwtService.sign(claims, {
       secret: this.configService.get<string>('JWT_SECRET'),
       expiresIn: this.configService.get<string>('JWT_EXPIRES_IN') || '15m',
@@ -28,14 +28,13 @@ export class JwtService {
 
   generateRefreshToken(user: User, tenantId: string, role: string): string {
     const claims = {
-      sub: user.id, // Using user ID as subject
-      email: user.email, // Include email for compatibility
-      tenant_id: tenantId, // Snake case to match Kotlin
+      sub: user.id,
+      email: user.email,
+      tenant_id: tenantId,
       role: role,
       type: 'refresh',
-      jti: this.generateUUID(), // Adding JTI like Kotlin version
+      jti: this.generateUUID(),
     };
-
     return this.nestJwtService.sign(claims, {
       secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       expiresIn:
@@ -48,16 +47,13 @@ export class JwtService {
     tenantId: string = 'default-tenant',
     role?: string,
   ): TokenPair {
-    const userRole = role || user.role || (user.isSuperuser ? 'ADMIN' : 'MANAGER');
-
+    const userRole =
+      role || user.role || (user.isSuperuser ? 'ADMIN' : 'MANAGER');
     const accessToken = this.generateAccessToken(user, tenantId, userRole);
     const refreshToken = this.generateRefreshToken(user, tenantId, userRole);
-
-    // Calculate expiration in seconds from JWT_EXPIRES_IN environment variable
-    const expiresInStr = this.configService.get<string>('JWT_EXPIRES_IN') || '24h';
-    let expiresInSeconds = 24 * 60 * 60; // Default 24 hours in seconds
-    
-    // Parse time string (e.g., "24h", "1d", "30m")
+    const expiresInStr =
+      this.configService.get<string>('JWT_EXPIRES_IN') || '24h';
+    let expiresInSeconds = 24 * 60 * 60;
     if (expiresInStr.endsWith('h')) {
       expiresInSeconds = parseInt(expiresInStr) * 60 * 60;
     } else if (expiresInStr.endsWith('d')) {
@@ -65,13 +61,26 @@ export class JwtService {
     } else if (expiresInStr.endsWith('m')) {
       expiresInSeconds = parseInt(expiresInStr) * 60;
     }
-
     return {
       accessToken,
       refreshToken,
-      tokenType: 'bearer', // Lowercase to match Kotlin
+      tokenType: 'bearer',
       expiresIn: expiresInSeconds,
     };
+  }
+
+  // New method for internal token generation
+  async generateInternalToken(): Promise<string> {
+    const claims = {
+      type: 'internal',
+      iat: Math.floor(Date.now() / 1000),
+    };
+    return this.nestJwtService.sign(claims, {
+      secret:
+        this.configService.get<string>('JWT_INTERNAL_SECRET') ||
+        this.configService.get<string>('JWT_SECRET'),
+      expiresIn: '1h', // Short-lived token
+    });
   }
 
   extractUsername(token: string): string {
@@ -150,15 +159,12 @@ export class JwtService {
       const payload = this.nestJwtService.verify(token, {
         secret: this.configService.get<string>('JWT_SECRET'),
       }) as any;
-
       if (payload.type !== 'access') {
         throw new InvalidTokenException('Invalid token type');
       }
-
-      // Convert to our JwtPayload format
       return {
         sub: payload.sub,
-        email: payload.sub, // In Kotlin, sub is the email
+        email: payload.sub,
         tenantId: payload.tenant_id,
         role: payload.role,
         iat: payload.iat,
@@ -175,16 +181,13 @@ export class JwtService {
       const payload = this.nestJwtService.verify(token, {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       }) as any;
-
       if (payload.type !== 'refresh') {
         throw new InvalidTokenException('Invalid token type');
       }
-
-      // Convert to our JwtPayload format
       return {
         sub: payload.sub,
-        email: payload.sub, // In Kotlin, sub is the email
-        tenantId: payload.tenant_id || 'default-tenant', // Map from tenant_id
+        email: payload.sub,
+        tenantId: payload.tenant_id || 'default-tenant',
         role: payload.role || 'user',
         iat: payload.iat,
         exp: payload.exp,
@@ -198,13 +201,11 @@ export class JwtService {
 
   private verifyToken(token: string): any {
     try {
-      // Try access token first
       return this.nestJwtService.verify(token, {
         secret: this.configService.get<string>('JWT_SECRET'),
       });
     } catch {
       try {
-        // Try refresh token
         return this.nestJwtService.verify(token, {
           secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
         });

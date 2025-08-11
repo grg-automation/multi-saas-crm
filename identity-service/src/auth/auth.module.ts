@@ -1,3 +1,4 @@
+import { HttpModule } from '@nestjs/axios'; // Import HttpModule
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
@@ -12,8 +13,9 @@ import { TokenBlacklistService } from './token-blacklist.service';
 
 @Module({
   imports: [
-    UserModule, // Import UserModule to access UserService
+    UserModule, // Provides UserService
     PassportModule,
+    HttpModule, // Add HttpModule to provide HttpService
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({

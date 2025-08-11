@@ -1,3 +1,4 @@
+// user.entity.ts
 import { Exclude } from 'class-transformer';
 import {
   Column,
@@ -106,9 +107,13 @@ export class User {
   @Column({ name: 'last_login', type: 'timestamp', nullable: true })
   lastLogin?: Date;
 
-  // Auth0 Integration (nullable for flexibility)
+  // Auth0 Integration
   @Column({ name: 'auth0_id', nullable: true, unique: true })
   auth0Id?: string;
+
+  // Multi-tenancy field
+  @Column({ name: 'tenant_id', nullable: true }) // Nullable for pending tenants
+  tenantId?: string;
 
   // Timestamps
   @CreateDateColumn({ name: 'created_at' })

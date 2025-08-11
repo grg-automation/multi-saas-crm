@@ -202,12 +202,16 @@ async function fetchTenantFromService(tenantId: string): Promise<any> {
 			{
 				headers: {
 					'Content-Type': 'application/json',
-					'x-service-auth': 'gateway-internal', // Internal service auth
+					'x-service-auth': 'gateway-internal',
+				},
+				auth: {
+					username: config.services.crm.username,
+					password: config.services.crm.password,
 				},
 				timeout: 5000,
 			}
 		)
-
+		logger.debug('Tenant fetch response:', response.data) // Add for debugging
 		return response.data
 	} catch (error) {
 		if (axios.isAxiosError(error) && error.response?.status === 404) {

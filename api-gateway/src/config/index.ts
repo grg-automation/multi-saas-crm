@@ -38,6 +38,10 @@ export const config = {
 		// Core CRM Service (Kotlin Spring Boot) - Main CRM functionality
 		crm: {
 			url: process.env.CRM_SERVICE_URL || 'http://localhost:8080',
+			username: process.env.CRM_SERVICE_USERNAME || 'user', // Match default username
+			password:
+				process.env.CRM_SERVICE_PASSWORD ||
+				'6ff28d72-5431-4dcb-a583-0df46e5a0579', // Use generated password
 			timeout: 30000,
 		},
 
