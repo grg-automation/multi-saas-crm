@@ -1,0 +1,24 @@
+apiVersion: multi-saas-crm.grg-automation.com/v1alpha1
+kind: Tenant
+metadata:
+  name: test-tenant
+  namespace: default
+spec:
+  organizationName: 'TestOrg'
+  tier: 'starter'
+  resources:
+    cpu:
+      request: '200m'
+      limit: '500m'
+    memory:
+      request: '256Mi'
+      limit: '512Mi'
+    storage:
+      size: '1Gi'
+  services:
+    - name: 'app-service'
+      version: 'v1'
+      replicas: 1
+  database:
+    type: 'postgres'
+    version: '13'

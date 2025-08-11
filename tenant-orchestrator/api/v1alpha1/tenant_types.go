@@ -1,12 +1,16 @@
 package v1alpha1
 
 import (
+	"context"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 // +kubebuilder:deepcopy
@@ -158,7 +162,7 @@ type TenantList struct {
 }
 
 // SchemeGroupVersion is the group version used to register these objects
-var SchemeGroupVersion = schema.GroupVersion{Group: "multi-saas-crm.rezenkai.com", Version: "v1alpha1"}
+var SchemeGroupVersion = schema.GroupVersion{Group: "multi-saas-crm.grg-automation.com", Version: "v1alpha1"}
 
 // SchemeBuilder is used to register CRD types
 var SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
@@ -188,6 +192,17 @@ func init() {
     
     // Add our types to the scheme
     utilruntime.Must(AddToScheme(Scheme))
+}
+
+func (t *Tenant) Handle(ctx context.Context, req admission.Request) admission.Response {
+    // Placeholder logic: Allow all requests for now
+    return admission.Allowed("validation passed")
+}
+
+func (t *Tenant) SetupWebhookWithManager(mgr ctrl.Manager) error {
+    return ctrl.NewWebhookManagedBy(mgr).
+        For(&Tenant{}).
+        Complete()
 }
 
 // DeepCopyInto is a manual deepcopy function for Tenant.

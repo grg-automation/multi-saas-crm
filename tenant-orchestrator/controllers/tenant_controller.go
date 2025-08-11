@@ -45,43 +45,81 @@ type TenantReconciler struct {
 
 // Reconcile the Tenant resource
 func (r *TenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx).WithValues("tenant", req.NamespacedName)
-	log.Info("Reconciling Tenant", "time", "01:47 AM +05, Tuesday, August 12, 2025")
+    log := log.FromContext(ctx)
 
-	tenant := &tenantv1alpha1.Tenant{}
-	if err := r.Get(ctx, req.NamespacedName, tenant); err != nil {
-		if errors.IsNotFound(err) {
-			log.Info("Tenant resource not found. Ignoring since object must be deleted")
-			return ctrl.Result{}, nil
-		}
-		log.Error(err, "Failed to get Tenant")
-		return ctrl.Result{}, err
-	}
+    // Fetch the Tenant instance
+    var tenant tenantv1alpha1.Tenant
+    if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
+        log.Error(err, "unable to fetch Tenant")
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
 
-	if !tenant.ObjectMeta.DeletionTimestamp.IsZero() {
-		return r.handleDeletion(ctx, tenant)
-	}
+    // Initialize status.phase if not set
+    if tenant.Status.Phase == "" {
+        tenant.Status.Phase = "Pending" // Set initial valid phase
+        if err := r.Status().Update(ctx, &tenant); err != nil {
+            if errors.IsConflict(err) || errors.IsNotFound(err) {
+                log.Error(err, "conflict or not found during initial status update, requeuing")
+                return ctrl.Result{Requeue: true}, nil
+            }
+            log.Error(err, "failed to update Tenant status")
+            return ctrl.Result{}, err
+        }
+        return ctrl.Result{Requeue: true}, nil // Requeue to process further
+    }
 
-	if !controllerutil.ContainsFinalizer(tenant, tenantFinalizer) {
-		controllerutil.AddFinalizer(tenant, tenantFinalizer)
-		if err := r.Update(ctx, tenant); err != nil {
-			log.Error(err, "Failed to add finalizer")
-			return ctrl.Result{}, err
-		}
-	}
+    // Handle deletion
+    if !tenant.ObjectMeta.DeletionTimestamp.IsZero() {
+        return r.handleDeletion(ctx, &tenant)
+    }
 
-	result, err := r.reconcileTenant(ctx, tenant)
-	if err != nil {
-		r.EventRecorder.Event(tenant, corev1.EventTypeWarning, "ReconcileError", err.Error())
-		return result, err
-	}
+    // Add finalizer if not present
+    if !controllerutil.ContainsFinalizer(&tenant, tenantFinalizer) {
+        controllerutil.AddFinalizer(&tenant, tenantFinalizer)
+        if err := r.Update(ctx, &tenant); err != nil {
+            log.Error(err, "failed to add finalizer")
+            return ctrl.Result{Requeue: true}, err
+        }
+        return ctrl.Result{Requeue: true}, nil
+    }
 
-	tenant.Status.LastReconciled = &metav1.Time{Time: time.Now()}
-	if err := r.Status().Update(ctx, tenant); err != nil {
-		log.Error(err, "Failed to update Tenant status")
-		return ctrl.Result{}, err
-	}
-	return result, nil
+    // Perform tenant reconciliation
+    result, err := r.reconcileTenant(ctx, &tenant)
+    if err != nil {
+        r.EventRecorder.Event(&tenant, corev1.EventTypeWarning, "ReconcileError", err.Error())
+        return result, err
+    }
+
+    // Re-fetch the tenant to ensure the latest state before updating status
+    if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
+        log.Error(err, "unable to re-fetch Tenant for status update")
+        return ctrl.Result{Requeue: true}, client.IgnoreNotFound(err)
+    }
+
+    // Update last reconciled time
+    tenant.Status.LastReconciled = &metav1.Time{Time: time.Now()}
+    for i := 0; i < 3; i++ { // Retry up to 3 times
+        if err := r.Status().Update(ctx, &tenant); err != nil {
+            if errors.IsConflict(err) {
+                log.Error(err, "conflict during status update, retrying", "attempt", i+1)
+                time.Sleep(time.Duration(i+1) * time.Second) // Backoff
+                if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
+                    log.Error(err, "unable to re-fetch Tenant after conflict")
+                    return ctrl.Result{Requeue: true}, err
+                }
+                continue
+            }
+            if errors.IsNotFound(err) {
+                log.Error(err, "tenant not found during status update, requeuing")
+                return ctrl.Result{Requeue: true}, nil
+            }
+            log.Error(err, "failed to update Tenant status")
+            return ctrl.Result{Requeue: true}, err
+        }
+        break
+    }
+
+    return result, nil
 }
 
 // Reconcile tenant resources
@@ -162,26 +200,25 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 
 // Ensure namespace exists
 func (r *TenantReconciler) ensureNamespace(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
-	log := log.FromContext(ctx)
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("tenant-%s", tenant.Name),
-			Labels: map[string]string{
-				"tenant.rezenkai.com/name": tenant.Name,
-				"tenant.rezenkai.com/tier": tenant.Spec.Tier,
-			},
-		},
-	}
-	if err := r.Create(ctx, ns); err != nil && !errors.IsAlreadyExists(err) {
-		log.Error(err, "Failed to create namespace")
-		return err
-	}
-	return nil
+    log := log.FromContext(ctx)
+    ns := &corev1.Namespace{
+        ObjectMeta: metav1.ObjectMeta{
+            Name: fmt.Sprintf("tenant-%s", tenant.Name),
+            Labels: map[string]string{
+                "tenant.rezenkai.com/name": tenant.Name,
+                "tenant.rezenkai.com/tier": tenant.Spec.Tier,
+            },
+        },
+    }
+    if err := r.Create(ctx, ns); err != nil && !errors.IsAlreadyExists(err) {
+        log.Error(err, "Failed to create namespace")
+        return err
+    }
+    return nil
 }
 
 // Reconcile database resources
 func (r *TenantReconciler) reconcileDatabase(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
-	log := log.FromContext(ctx)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-db-credentials", tenant.Name),
@@ -221,22 +258,27 @@ func (r *TenantReconciler) reconcileDatabase(ctx context.Context, tenant *tenant
 
 // Reconcile service deployment
 func (r *TenantReconciler) reconcileService(ctx context.Context, tenant *tenantv1alpha1.Tenant, svc tenantv1alpha1.ServiceSpec) error {
-	log := log.FromContext(ctx)
-	deployment := r.serviceDeployment(tenant, svc)
-	if err := controllerutil.SetControllerReference(tenant, deployment, r.Scheme); err != nil {
-		return err
-	}
-	if err := r.Create(ctx, deployment); err != nil && !errors.IsAlreadyExists(err) {
-		return err
-	}
-	service := r.kubernetesService(tenant, svc)
-	if err := controllerutil.SetControllerReference(tenant, service, r.Scheme); err != nil {
-		return err
-	}
-	if err := r.Create(ctx, service); err != nil && !errors.IsAlreadyExists(err) {
-		return err
-	}
-	return nil
+    log := log.FromContext(ctx)
+    deployment := r.serviceDeployment(tenant, svc)
+    if err := controllerutil.SetControllerReference(tenant, deployment, r.Scheme); err != nil {
+        log.Error(err, "Failed to set controller reference for deployment", "service", svc.Name)
+        return err
+    }
+    if err := r.Create(ctx, deployment); err != nil && !errors.IsAlreadyExists(err) {
+        log.Error(err, "Failed to create deployment", "service", svc.Name)
+        return err
+    }
+    service := r.kubernetesService(tenant, svc)
+    if err := controllerutil.SetControllerReference(tenant, service, r.Scheme); err != nil {
+        log.Error(err, "Failed to set controller reference for service", "service", svc.Name)
+        return err
+    }
+    if err := r.Create(ctx, service); err != nil && !errors.IsAlreadyExists(err) {
+        log.Error(err, "Failed to create service", "service", svc.Name)
+        return err
+    }
+    log.Info("Successfully reconciled service", "service", svc.Name) // Optional success log
+    return nil
 }
 
 // Reconcile backup job

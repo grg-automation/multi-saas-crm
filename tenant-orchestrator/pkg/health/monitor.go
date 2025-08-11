@@ -68,22 +68,21 @@ func (m *Monitor) CheckTenantHealth(ctx context.Context, tenant *tenantv1alpha1.
 
 // checkDatabaseHealth performs a health check on the tenant's database
 func (m *Monitor) checkDatabaseHealth(ctx context.Context, tenant *tenantv1alpha1.Tenant) (bool, error) {
-	log := log.FromContext(ctx).WithValues("tenant", tenant.Name)
-	statefulSet := &appsv1.StatefulSet{}
-	err := m.client.Get(ctx, types.NamespacedName{
-		Name:      fmt.Sprintf("%s-db", tenant.Name),
-		Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
-	}, statefulSet)
-	if err != nil {
-		return false, fmt.Errorf("failed to get database StatefulSet: %w", err)
-	}
-	if statefulSet.Status.ReadyReplicas == 0 {
-		return false, fmt.Errorf("database StatefulSet has no ready replicas")
-	}
-
-	// Optional: Add a database connectivity check (e.g., using a simple query)
-	// This requires database credentials and a client (e.g., lib/pq for PostgreSQL)
-	return true, nil
+    log := log.FromContext(ctx).WithValues("tenant", tenant.Name)
+    statefulSet := &appsv1.StatefulSet{}
+    err := m.client.Get(ctx, types.NamespacedName{
+        Name:      fmt.Sprintf("%s-db", tenant.Name),
+        Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+    }, statefulSet)
+    if err != nil {
+        log.Error(err, "Failed to get database StatefulSet")
+        return false, err // Return the original error
+    }
+    if statefulSet.Status.ReadyReplicas == 0 {
+        log.Error(nil, "Database StatefulSet has no ready replicas")
+        return false, fmt.Errorf("database StatefulSet has no ready replicas") // Optional: keep fmt.Errorf for consistency
+    }
+    return true, nil
 }
 
 // boolToFloat64 converts a boolean to a Prometheus-compatible float64

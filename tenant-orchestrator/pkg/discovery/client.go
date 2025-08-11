@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
@@ -334,20 +335,20 @@ func (w *ServiceWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 // SetupWithManager sets up the controller with the Manager
 func (w *ServiceWatcher) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Service{}).
-		WithEventFilter(predicate.Funcs{
-			CreateFunc: func(e ctrl.CreateEvent) bool {
-				return isTenantNamespace(e.Object.GetNamespace())
-			},
-			UpdateFunc: func(e ctrl.UpdateEvent) bool {
-				return isTenantNamespace(e.ObjectNew.GetNamespace())
-			},
-			DeleteFunc: func(e ctrl.DeleteEvent) bool {
-				return isTenantNamespace(e.Object.GetNamespace())
-			},
-		}).
-		Complete(w)
+    return ctrl.NewControllerManagedBy(mgr).
+        For(&corev1.Service{}).
+        WithEventFilter(predicate.Funcs{
+            CreateFunc: func(e event.CreateEvent) bool {
+                return isTenantNamespace(e.Object.GetNamespace())
+            },
+            UpdateFunc: func(e event.UpdateEvent) bool {
+                return isTenantNamespace(e.ObjectNew.GetNamespace())
+            },
+            DeleteFunc: func(e event.DeleteEvent) bool {
+                return isTenantNamespace(e.Object.GetNamespace())
+            },
+        }).
+        Complete(w)
 }
 
 // Helper functions
