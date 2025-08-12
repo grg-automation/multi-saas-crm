@@ -1,28 +1,55 @@
-// Path: src/contexts/AuthContext.tsx (create this if not exists)
-import { createContext, ReactNode, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import axios from '../utils/axiosInstance'
 
-// Context
-export const AuthContext = createContext<AuthContextType | undefined>(undefined)
+const AuthContext = createContext()
 
-// Provider (wrap in _app.tsx or layout)
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
-	const [token, setToken] = useState<string | null>(null)
-	const [tenantId, setTenantId] = useState<string | null>(null)
+export function AuthProvider({ children }) {
+	const { tenantId } = useParams()
+	const navigate = useNavigate()
+
+	const [token, setToken] = useState(
+		() => localStorage.getItem('token') || null
+	)
+	const [currentTenant, setCurrentTenant] = useState(
+		() => localStorage.getItem('tenantId') || tenantId || null
+	)
 
 	useEffect(() => {
-		// Load from localStorage or your auth lib (e.g., after login)
-		const storedToken = localStorage.getItem('accessToken')
-		const storedTenant = localStorage.getItem('tenantId')
-		if (storedToken) setToken(storedToken)
-		if (storedTenant) setTenantId(storedTenant)
-		// Integrate with real auth flow, e.g., Keycloak or Auth0 callback
-	}, [])
+		if (tenantId && tenantId !== currentTenant) {
+			setCurrentTenant(tenantId)
+			localStorage.setItem('tenantId', tenantId)
+		}
+	}, [tenantId])
 
-	// Add methods like login: (newToken, newTenant) => { setToken(newToken); setTenantId(newTenant); localStorage.setItem... }
+	const login = async (email, password) => {
+		try {
+			const res = await axios.post(`/${currentTenant}/api/v1/auth/login`, {
+				email,
+				password,
+			})
+			setToken(res.data.token)
+			localStorage.setItem('token', res.data.token)
+			navigate(`/${currentTenant}/dashboard`)
+		} catch (err) {
+			console.error('Login failed', err)
+			throw err
+		}
+	}
+
+	const logout = () => {
+		setToken(null)
+		localStorage.removeItem('token')
+		navigate(`/${currentTenant}/login`)
+	}
 
 	return (
-		<AuthContext.Provider value={{ token, tenantId }}>
+		<AuthContext.Provider value={{ token, currentTenant, login, logout }}>
 			{children}
 		</AuthContext.Provider>
 	)
+}
+
+export function useAuth() {
+	return useContext(AuthContext)
 }

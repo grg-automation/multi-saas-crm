@@ -1,19 +1,10 @@
-// Path: src/hooks/useAuth.ts
-import { AuthContext } from '@/contexts/AuthContext' // Create this context if not exists
+// frontend/src/hooks/useAuth.ts
+'use client'
+import { AuthContext } from '@/contexts/AuthContext'
 import { useContext } from 'react'
 
-// Basic AuthContext type (expand as needed)
-interface AuthContextType {
-	token: string | null
-	tenantId: string | null
-	// Add more: user, login, logout, etc.
-}
-
-// Hook
-export const useAuth = (): AuthContextType => {
-	const context = useContext(AuthContext)
-	if (!context) {
-		throw new Error('useAuth must be used within an AuthProvider')
-	}
-	return context
+export const useAuth = () => {
+	const ctx = useContext(AuthContext)
+	if (!ctx) throw new Error('useAuth must be used within AuthProvider')
+	return ctx
 }

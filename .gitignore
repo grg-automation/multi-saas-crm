@@ -239,3 +239,4 @@ analytics-service/ml-service/ml_models/
 event-ingestion-service/target
 extension-runtime-service/target
 wasm_test/target
+tenant-orchestrator/bin/

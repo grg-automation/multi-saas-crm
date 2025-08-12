@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/hooks/useAuth' // Assume this provides token and tenantId
+import api from '@/lib/api'
 import {
 	AlertCircle,
 	Calendar,
@@ -94,11 +95,10 @@ export default function TasksPage() {
 		setLoading(true)
 		setError(null)
 		try {
-			const response = await fetch(`${API_BASE}/tasks`, {
-				headers: getHeaders(),
-			})
-			if (!response.ok) throw new Error('Failed to fetch tasks')
-			const tasks: Task[] = await response.json()
+			const resp = await api.get('/tasks') // goes to /api/v1/tasks
+			// server may return { success: true, data: tasks } or array directly
+			const data = resp.data?.data ?? resp.data
+			const tasks: Task[] = Array.isArray(data) ? data : (data.tasks ?? [])
 			const groupedColumns = COLUMNS_CONFIG.map(col => ({
 				...col,
 				tasks: tasks.filter(task => task.status === col.title),
