@@ -16,9 +16,9 @@ spec:
     storage:
       size: '1Gi'
   services:
-    - name: 'app-service'
-      version: 'v1'
+    - name: 'web-app'
+      version: 'v1.0.0'
       replicas: 1
   database:
     type: 'postgres'
-    version: '13'
+    version: '15'

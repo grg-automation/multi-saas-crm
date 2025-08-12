@@ -36,6 +36,8 @@ export class UserService {
     private readonly userRepository: Repository<User>,
   ) {}
 
+  // In your user.service.ts, update the create method:
+
   async create(
     createUserDto: CreateUserDto | CreateUserWithAuth0Dto,
   ): Promise<User> {
@@ -53,13 +55,10 @@ export class UserService {
     // Handle password for different user types
     const authDto = createUserDto as CreateUserWithAuth0Dto;
     if (authDto.hashedPassword) {
-      // Direct hashed password (for Auth0 managed users)
       hashedPassword = authDto.hashedPassword;
     } else if (authDto.password === 'auth0_managed') {
-      // Auth0 managed users don't have a local password
       hashedPassword = undefined;
     } else if (authDto.password || (createUserDto as CreateUserDto).password) {
-      // Regular users - hash the password
       const plainPassword =
         authDto.password || (createUserDto as CreateUserDto).password;
       hashedPassword = await bcrypt.hash(plainPassword, 12);
@@ -69,13 +68,15 @@ export class UserService {
 
     // Create user with proper defaults
     const userData: Partial<User> = {
-      // Fix: Use Partial<User> type
       email: createUserDto.email.toLowerCase(),
       hashedPassword,
       firstName: createUserDto.firstName,
       lastName: createUserDto.lastName,
+      // Handle tenantId - it should be a UUID now, not 'pending'
+      tenantId: (createUserDto as any).tenantId || null, // Use null instead of 'pending'
+      role: (createUserDto as any).role || 'USER',
       // Profile fields
-      avatarUrl: authDto.avatarUrl || undefined, // Fix: Use undefined instead of null
+      avatarUrl: authDto.avatarUrl || undefined,
       phone: undefined,
       title: undefined,
       department: undefined,
@@ -90,7 +91,7 @@ export class UserService {
       marketingNotifications: createUserDto.marketingNotifications ?? false,
       // Status fields
       isActive: authDto.isActive ?? true,
-      isVerified: authDto.isVerified ?? !authDto.auth0Id, // Regular users verified by default, Auth0 users pre-verified based on isVerified field
+      isVerified: authDto.isVerified ?? true,
       isSuperuser: false,
       // 2FA fields
       twoFactorEnabled: false,

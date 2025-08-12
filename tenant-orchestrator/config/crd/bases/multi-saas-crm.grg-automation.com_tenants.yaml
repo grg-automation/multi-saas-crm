@@ -17,57 +17,114 @@ spec:
       storage: true
       subresources:
         status: {}
+      additionalPrinterColumns:
+        - name: Organization
+          type: string
+          jsonPath: .spec.organizationName
+        - name: Tier
+          type: string
+          jsonPath: .spec.tier
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: URL
+          type: string
+          jsonPath: .status.url
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
       schema:
         openAPIV3Schema:
           type: object
           properties:
             spec:
               type: object
+              required:
+                - organizationName
+                - tier
+                - resources
+                - database
               properties:
                 organizationName:
                   type: string
+                  description: 'Name of the tenant organization'
+                  minLength: 3
+                  maxLength: 50
                 tier:
                   type: string
+                  description: 'Tier determines resource allocation'
                   enum: [starter, professional, enterprise]
                 resources:
                   type: object
+                  required:
+                    - cpu
+                    - memory
+                    - storage
                   properties:
                     cpu:
                       type: object
+                      required:
+                        - request
+                        - limit
                       properties:
                         request:
                           type: string
+                          pattern: '^[0-9]+m?$'
                         limit:
                           type: string
+                          pattern: '^[0-9]+m?$'
                     memory:
                       type: object
+                      required:
+                        - request
+                        - limit
                       properties:
                         request:
                           type: string
+                          pattern: '^[0-9]+(Mi|Gi)$'
                         limit:
                           type: string
+                          pattern: '^[0-9]+(Mi|Gi)$'
                     storage:
                       type: object
+                      required:
+                        - size
                       properties:
                         size:
                           type: string
+                          pattern: '^[0-9]+(Mi|Gi)$'
                         storageClass:
                           type: string
                 services:
                   type: array
                   items:
                     type: object
+                    required:
+                      - name
+                      - version
+                      - replicas
                     properties:
                       name:
                         type: string
+                        minLength: 1
+                        maxLength: 50
                       version:
                         type: string
+                        pattern: '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$'
                       replicas:
                         type: integer
+                        minimum: 1
+                        maximum: 10
                       env:
                         type: array
                         items:
                           type: object
+                          required:
+                            - name
+                            - value
                           properties:
                             name:
                               type: string
@@ -77,8 +134,30 @@ spec:
                         type: object
                         additionalProperties:
                           type: string
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          required:
+                            - port
+                          properties:
+                            port:
+                              type: integer
+                              minimum: 1
+                              maximum: 65535
+                            targetPort:
+                              type: integer
+                              minimum: 1
+                              maximum: 65535
+                            protocol:
+                              type: string
+                              enum: [TCP, UDP]
+                              default: TCP
                 database:
                   type: object
+                  required:
+                    - type
+                    - version
                   properties:
                     type:
                       type: string
@@ -87,23 +166,54 @@ spec:
                       type: string
                     poolSize:
                       type: integer
+                      minimum: 1
+                      maximum: 100
+                      default: 10
                     backup:
                       type: object
                       properties:
                         enabled:
                           type: boolean
+                          default: false
                         schedule:
                           type: string
+                          pattern: '^(@(annually|yearly|monthly|weekly|daily|hourly|reboot))|(@every (\d+(ns|us|µs|ms|s|m|h))+)|((((\d+,)+\d+|(\d+(\/|-)\d+)|\d+|\*) ?){5,7})$'
                         retentionDays:
                           type: integer
+                          minimum: 1
+                          maximum: 365
+                          default: 7
                 domains:
                   type: array
                   items:
                     type: string
+                    pattern: '^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
                 features:
                   type: object
                   additionalProperties:
                     type: boolean
+                networking:
+                  type: object
+                  properties:
+                    isolation:
+                      type: boolean
+                      default: true
+                    allowedNamespaces:
+                      type: array
+                      items:
+                        type: string
+                    ingressClass:
+                      type: string
+                      default: nginx
+                monitoring:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    retention:
+                      type: string
+                      default: '7d'
             status:
               type: object
               properties:
@@ -114,12 +224,22 @@ spec:
                   type: array
                   items:
                     type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
                     properties:
                       type:
                         type: string
                       status:
                         type: string
+                        enum: [True, False, Unknown]
                       lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
                         type: string
                 services:
                   type: array
@@ -132,6 +252,8 @@ spec:
                         type: boolean
                       replicas:
                         type: integer
+                      readyReplicas:
+                        type: integer
                       version:
                         type: string
                       endpoints:
@@ -140,6 +262,7 @@ spec:
                           type: string
                       lastUpdated:
                         type: string
+                        format: date-time
                 databaseStatus:
                   type: object
                   properties:
@@ -151,6 +274,9 @@ spec:
                       type: boolean
                     lastBackupTime:
                       type: string
+                      format: date-time
+                    size:
+                      type: string
                 resourceMetrics:
                   type: object
                   properties:
@@ -160,9 +286,21 @@ spec:
                       type: string
                     storageUsage:
                       type: string
+                    networkIn:
+                      type: string
+                    networkOut:
+                      type: string
                     updatedAt:
                       type: string
+                      format: date-time
                 lastReconciled:
                   type: string
+                  format: date-time
                 url:
+                  type: string
+                observedGeneration:
+                  type: integer
+                namespace:
+                  type: string
+                tenantId:
                   type: string

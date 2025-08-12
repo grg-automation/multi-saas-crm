@@ -3,9 +3,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"strings"
 	"time"
 
 	tenantv1alpha1 "github.com/grg-automation/multi-saas-crm/tenant-orchestrator/api/v1alpha1"
@@ -17,8 +14,10 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,7 +30,7 @@ const (
 	tenantFinalizer = "tenant.grg-automation.com/finalizer"
 	ownerKey        = ".metadata.controller"
 	apiVersion      = "tenant.grg-automation.com/v1alpha1"
-	authServiceURL  = "http://localhost:3002/api/v1/tenants/ready" // Mock AuthService endpoint
+	authServiceURL  = "http://localhost:3002/api/v1/tenants/ready"
 )
 
 // TenantReconciler reconciles a Tenant object
@@ -43,93 +42,180 @@ type TenantReconciler struct {
 	EventRecorder record.EventRecorder
 }
 
-// Reconcile the Tenant resource
+// Reconcile the Tenant resource with improved error handling
 func (r *TenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-    log := log.FromContext(ctx)
+	log := log.FromContext(ctx)
 
-    // Fetch the Tenant instance
-    var tenant tenantv1alpha1.Tenant
-    if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
-        log.Error(err, "unable to fetch Tenant")
-        return ctrl.Result{}, client.IgnoreNotFound(err)
-    }
+	// Fetch the Tenant instance
+	var tenant tenantv1alpha1.Tenant
+	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
+		log.Error(err, "unable to fetch Tenant")
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
 
-    // Initialize status.phase if not set
-    if tenant.Status.Phase == "" {
-        tenant.Status.Phase = "Pending" // Set initial valid phase
-        if err := r.Status().Update(ctx, &tenant); err != nil {
-            if errors.IsConflict(err) || errors.IsNotFound(err) {
-                log.Error(err, "conflict or not found during initial status update, requeuing")
-                return ctrl.Result{Requeue: true}, nil
-            }
-            log.Error(err, "failed to update Tenant status")
-            return ctrl.Result{}, err
-        }
-        return ctrl.Result{Requeue: true}, nil // Requeue to process further
-    }
+	// Initialize status.phase if not set
+	if tenant.Status.Phase == "" {
+		tenant.Status.Phase = "Pending"
+		if err := r.Status().Update(ctx, &tenant); err != nil {
+			if errors.IsConflict(err) || errors.IsNotFound(err) {
+				log.Info("conflict or not found during initial status update, requeuing")
+				return ctrl.Result{Requeue: true}, nil
+			}
+			log.Error(err, "failed to update Tenant status")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
 
-    // Handle deletion
-    if !tenant.ObjectMeta.DeletionTimestamp.IsZero() {
-        return r.handleDeletion(ctx, &tenant)
-    }
+	// Handle deletion
+	if !tenant.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, &tenant)
+	}
 
-    // Add finalizer if not present
-    if !controllerutil.ContainsFinalizer(&tenant, tenantFinalizer) {
-        controllerutil.AddFinalizer(&tenant, tenantFinalizer)
-        if err := r.Update(ctx, &tenant); err != nil {
-            log.Error(err, "failed to add finalizer")
-            return ctrl.Result{Requeue: true}, err
-        }
-        return ctrl.Result{Requeue: true}, nil
-    }
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(&tenant, tenantFinalizer) {
+		controllerutil.AddFinalizer(&tenant, tenantFinalizer)
+		if err := r.Update(ctx, &tenant); err != nil {
+			log.Error(err, "failed to add finalizer")
+			return ctrl.Result{Requeue: true}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
 
-    // Perform tenant reconciliation
-    result, err := r.reconcileTenant(ctx, &tenant)
-    if err != nil {
-        r.EventRecorder.Event(&tenant, corev1.EventTypeWarning, "ReconcileError", err.Error())
-        return result, err
-    }
+	// Perform tenant reconciliation
+	result, err := r.reconcileTenant(ctx, &tenant)
+	if err != nil {
+		r.EventRecorder.Event(&tenant, corev1.EventTypeWarning, "ReconcileError", err.Error())
+		
+		// Update status to reflect error
+		tenant.Status.Phase = "Failed"
+		meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "ReconcileError",
+			Message: err.Error(),
+		})
+		
+		if statusErr := r.Status().Update(ctx, &tenant); statusErr != nil {
+			log.Error(statusErr, "failed to update error status")
+		}
+		
+		return result, err
+	}
 
-    // Re-fetch the tenant to ensure the latest state before updating status
-    if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
-        log.Error(err, "unable to re-fetch Tenant for status update")
-        return ctrl.Result{Requeue: true}, client.IgnoreNotFound(err)
-    }
+	// Update last reconciled time
+	tenant.Status.LastReconciled = &metav1.Time{Time: time.Now()}
+	if err := r.updateStatusWithRetry(ctx, &tenant); err != nil {
+		log.Error(err, "failed to update status after successful reconciliation")
+		return ctrl.Result{Requeue: true}, err
+	}
 
-    // Update last reconciled time
-    tenant.Status.LastReconciled = &metav1.Time{Time: time.Now()}
-    for i := 0; i < 3; i++ { // Retry up to 3 times
-        if err := r.Status().Update(ctx, &tenant); err != nil {
-            if errors.IsConflict(err) {
-                log.Error(err, "conflict during status update, retrying", "attempt", i+1)
-                time.Sleep(time.Duration(i+1) * time.Second) // Backoff
-                if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
-                    log.Error(err, "unable to re-fetch Tenant after conflict")
-                    return ctrl.Result{Requeue: true}, err
-                }
-                continue
-            }
-            if errors.IsNotFound(err) {
-                log.Error(err, "tenant not found during status update, requeuing")
-                return ctrl.Result{Requeue: true}, nil
-            }
-            log.Error(err, "failed to update Tenant status")
-            return ctrl.Result{Requeue: true}, err
-        }
-        break
-    }
-
-    return result, nil
+	return result, nil
 }
 
-// Reconcile tenant resources
+// updateStatusWithRetry handles status updates with conflict resolution
+func (r *TenantReconciler) updateStatusWithRetry(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
+	log := log.FromContext(ctx)
+	
+	for i := 0; i < 3; i++ {
+		if err := r.Status().Update(ctx, tenant); err != nil {
+			if errors.IsConflict(err) {
+				log.Info("conflict during status update, retrying", "attempt", i+1)
+				time.Sleep(time.Duration(i+1) * time.Second)
+				
+				// Re-fetch the latest version
+				if fetchErr := r.Get(ctx, client.ObjectKeyFromObject(tenant), tenant); fetchErr != nil {
+					return fetchErr
+				}
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("failed to update status after 3 attempts")
+}
+
+func (r *TenantReconciler) reconcileBackup(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
+	log := log.FromContext(ctx).WithValues("tenant", tenant.Name)
+	
+	// TODO: Implement backup job creation
+	// For now, just log that backup is being set up
+	log.Info("Setting up backup configuration", "tenant", tenant.Name)
+	
+	// Create a simple CronJob for database backup (placeholder)
+	cronJob := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-db-backup", tenant.Name),
+			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+			Labels: map[string]string{
+				"tenant.rezenkai.com/name": tenant.Name,
+				"app.kubernetes.io/managed-by": "tenant-orchestrator",
+				"app.kubernetes.io/component": "backup",
+			},
+		},
+		Spec: batchv1.CronJobSpec{
+			Schedule: tenant.Spec.Database.Backup.Schedule,
+			JobTemplate: batchv1.JobTemplateSpec{
+				Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							RestartPolicy: corev1.RestartPolicyOnFailure,
+							Containers: []corev1.Container{
+								{
+									Name:  "backup",
+									Image: "postgres:15", // Use same version as database
+									Command: []string{
+										"sh", "-c",
+										"echo 'Backup placeholder - implement pg_dump here'",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	
+	if err := r.Create(ctx, cronJob); err != nil && !errors.IsAlreadyExists(err) {
+		log.Error(err, "Failed to create backup CronJob")
+		return err
+	}
+	
+	log.Info("Backup CronJob created successfully")
+	return nil
+}
+
+func (r *TenantReconciler) notifyTenantReady(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
+	log := log.FromContext(ctx).WithValues("tenant", tenant.Name)
+	
+	// TODO: Implement notification to external services
+	// For now, just log that tenant is ready
+	log.Info("Tenant is ready and active", 
+		"tenant", tenant.Name, 
+		"organization", tenant.Spec.OrganizationName,
+		"url", tenant.Status.URL,
+	)
+	
+	// You could add HTTP calls to notify other services here
+	// Example:
+	// - Notify billing service
+	// - Notify monitoring service  
+	// - Send email to tenant admin
+	// - Update external registry
+	
+	return nil
+}
+
+// Simplified reconcileTenant
 func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1alpha1.Tenant) (ctrl.Result, error) {
 	log := log.FromContext(ctx).WithValues("tenant", tenant.Name)
-	tenantId := tenant.Name // Use CRD name as tenantId for URL-based routing
+	tenantId := tenant.Name
 
 	if tenant.Status.Phase == "" || tenant.Status.Phase == "Pending" {
 		tenant.Status.Phase = "Provisioning"
-		r.EventRecorder.Event(tenant, corev1.EventTypeNormal, "Provisioning", "Starting tenant provisioning at 01:47 AM +05, Tuesday, August 12, 2025")
+		r.EventRecorder.Event(tenant, corev1.EventTypeNormal, "Provisioning", "Starting tenant provisioning")
 	}
 
 	if err := r.ensureNamespace(ctx, tenant); err != nil {
@@ -140,7 +226,7 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 	if err := r.reconcileDatabase(ctx, tenant); err != nil {
 		meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
 			Type:    "DatabaseReady",
-			Status:  metav1.ConditionFalse,
+			Status:  "False", // ИСПРАВЛЕНО: строка
 			Reason:  "DatabaseError",
 			Message: err.Error(),
 		})
@@ -158,7 +244,7 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 		if err := r.reconcileBackup(ctx, tenant); err != nil {
 			meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
 				Type:    "BackupReady",
-				Status:  metav1.ConditionFalse,
+				Status:  "False", // ИСПРАВЛЕНО: строка
 				Reason:  "BackupError",
 				Message: err.Error(),
 			})
@@ -166,7 +252,7 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 		}
 		meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
 			Type:    "BackupReady",
-			Status:  metav1.ConditionTrue,
+			Status:  "True", // ИСПРАВЛЕНО: строка
 			Reason:  "BackupProvisioned",
 			Message: "Backups are configured",
 		})
@@ -185,7 +271,7 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 	}
 	if healthy {
 		tenant.Status.Phase = "Active"
-		r.EventRecorder.Event(tenant, corev1.EventTypeNormal, "Active", "Tenant is active and healthy at 01:47 AM +05, Tuesday, August 12, 2025")
+		r.EventRecorder.Event(tenant, corev1.EventTypeNormal, "Active", "Tenant is active and healthy")
 		if err := r.notifyTenantReady(ctx, tenant); err != nil {
 			log.Error(err, "Failed to notify tenant readiness")
 		}
@@ -198,109 +284,43 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 }
 
-// Ensure namespace exists
+// Simplified ensureNamespace
 func (r *TenantReconciler) ensureNamespace(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
-    log := log.FromContext(ctx)
-    ns := &corev1.Namespace{
-        ObjectMeta: metav1.ObjectMeta{
-            Name: fmt.Sprintf("tenant-%s", tenant.Name),
-            Labels: map[string]string{
-                "tenant.rezenkai.com/name": tenant.Name,
-                "tenant.rezenkai.com/tier": tenant.Spec.Tier,
-            },
-        },
-    }
-    if err := r.Create(ctx, ns); err != nil && !errors.IsAlreadyExists(err) {
-        log.Error(err, "Failed to create namespace")
-        return err
-    }
-    return nil
-}
-
-// Reconcile database resources
-func (r *TenantReconciler) reconcileDatabase(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
-	secret := &corev1.Secret{
+	namespaceName := fmt.Sprintf("tenant-%s", tenant.Name)
+	
+	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-db-credentials", tenant.Name),
-			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			"username": []byte(fmt.Sprintf("tenant_%s", tenant.Name)),
-			"password": []byte("SecurePassword123!"), // Replace with secure generation
-			"database": []byte(fmt.Sprintf("tenant_%s_db", tenant.Name)),
+			Name: namespaceName,
+			Labels: map[string]string{
+				"tenant.grg-automation.com/name": tenant.Name,
+				"tenant.grg-automation.com/tier": tenant.Spec.Tier,
+			},
 		},
 	}
-	if err := controllerutil.SetControllerReference(tenant, secret, r.Scheme); err != nil {
-		return err
-	}
-	if err := r.Create(ctx, secret); err != nil && !errors.IsAlreadyExists(err) {
-		return err
-	}
 
-	statefulSet := r.databaseStatefulSet(tenant)
-	if err := controllerutil.SetControllerReference(tenant, statefulSet, r.Scheme); err != nil {
-		return err
-	}
-	if err := r.Create(ctx, statefulSet); err != nil && !errors.IsAlreadyExists(err) {
+	if err := r.Create(ctx, ns); err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	}
 
-	tenant.Status.DatabaseStatus.ConnectionURL = fmt.Sprintf("%s-db-svc.tenant-%s.svc.cluster.local:5432/%s", tenant.Name, tenant.Name, fmt.Sprintf("tenant_%s_db", tenant.Name))
-	meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
-		Type:    "DatabaseReady",
-		Status:  metav1.ConditionTrue,
-		Reason:  "DatabaseProvisioned",
-		Message: "Database is provisioned and ready",
-	})
-	return nil
-}
-
-// Reconcile service deployment
-func (r *TenantReconciler) reconcileService(ctx context.Context, tenant *tenantv1alpha1.Tenant, svc tenantv1alpha1.ServiceSpec) error {
-    log := log.FromContext(ctx)
-    deployment := r.serviceDeployment(tenant, svc)
-    if err := controllerutil.SetControllerReference(tenant, deployment, r.Scheme); err != nil {
-        log.Error(err, "Failed to set controller reference for deployment", "service", svc.Name)
-        return err
-    }
-    if err := r.Create(ctx, deployment); err != nil && !errors.IsAlreadyExists(err) {
-        log.Error(err, "Failed to create deployment", "service", svc.Name)
-        return err
-    }
-    service := r.kubernetesService(tenant, svc)
-    if err := controllerutil.SetControllerReference(tenant, service, r.Scheme); err != nil {
-        log.Error(err, "Failed to set controller reference for service", "service", svc.Name)
-        return err
-    }
-    if err := r.Create(ctx, service); err != nil && !errors.IsAlreadyExists(err) {
-        log.Error(err, "Failed to create service", "service", svc.Name)
-        return err
-    }
-    log.Info("Successfully reconciled service", "service", svc.Name) // Optional success log
-    return nil
-}
-
-// Reconcile backup job
-func (r *TenantReconciler) reconcileBackup(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
-	// Stub: Implement backup job creation
-	return nil
-}
-
-// Reconcile ingress
-func (r *TenantReconciler) reconcileIngress(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
-	ingress := &networkingv1.Ingress{
+	// Basic resource quota
+	quota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-ingress", tenant.Name),
-			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+			Name:      fmt.Sprintf("%s-quota", tenant.Name),
+			Namespace: namespaceName,
+		},
+		Spec: corev1.ResourceQuotaSpec{
+			Hard: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse(tenant.Spec.Resources.CPU.Limit),
+				corev1.ResourceMemory: resource.MustParse(tenant.Spec.Resources.Memory.Limit),
+				corev1.ResourcePods:   resource.MustParse("50"),
+			},
 		},
 	}
-	if err := controllerutil.SetControllerReference(tenant, ingress, r.Scheme); err != nil {
+
+	if err := r.Create(ctx, quota); err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	}
-	if err := r.Create(ctx, ingress); err != nil && !errors.IsAlreadyExists(err) {
-		return err
-	}
+
 	return nil
 }
 
@@ -326,127 +346,242 @@ func (r *TenantReconciler) handleDeletion(ctx context.Context, tenant *tenantv1a
 
 // Clean up tenant resources
 func (r *TenantReconciler) cleanupTenantResources(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
-	log := log.FromContext(ctx)
-	if err := r.Discovery.RemoveTenant(ctx, tenant); err != nil {
-		log.Error(err, "Failed to remove tenant from service discovery")
+	// Delete the tenant namespace (this will delete all resources in it)
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("tenant-%s", tenant.Name),
+		},
+	}
+	
+	if err := r.Delete(ctx, ns); err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	
+	return nil
+}
+
+func (r *TenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&tenantv1alpha1.Tenant{}).
+		WithEventFilter(predicate.GenerationChangedPredicate{}).
+		Complete(r)
+}
+
+func (r *TenantReconciler) reconcileDatabase(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-db-credentials", tenant.Name),
+			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+			Labels: map[string]string{
+				"tenant.rezenkai.com/name": tenant.Name,
+				"app.kubernetes.io/managed-by": "tenant-orchestrator",
+				"app.kubernetes.io/part-of": "tenant-infrastructure",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"username": []byte(fmt.Sprintf("tenant_%s", tenant.Name)),
+			"password": []byte("SecurePassword123!"),
+			"database": []byte(fmt.Sprintf("tenant_%s_db", tenant.Name)),
+		},
+	}
+	// Remove cross-namespace owner reference
+	// if err := controllerutil.SetControllerReference(tenant, secret, r.Scheme); err != nil {
+	//     return err
+	// }
+	if err := r.Create(ctx, secret); err != nil && !errors.IsAlreadyExists(err) {
+		return err
+	}
+
+	statefulSet := r.databaseStatefulSet(tenant)
+	// Remove cross-namespace owner reference
+	// if err := controllerutil.SetControllerReference(tenant, statefulSet, r.Scheme); err != nil {
+	//     return err
+	// }
+	if err := r.Create(ctx, statefulSet); err != nil && !errors.IsAlreadyExists(err) {
+		return err
+	}
+
+	tenant.Status.DatabaseStatus.ConnectionURL = fmt.Sprintf("%s-db-svc.tenant-%s.svc.cluster.local:5432/%s", tenant.Name, tenant.Name, fmt.Sprintf("tenant_%s_db", tenant.Name))
+	meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
+		Type:    "DatabaseReady",
+		Status:  "True", // ИЗМЕНЕНО: строка вместо константы
+		Reason:  "DatabaseProvisioned",
+		Message: "Database is provisioned and ready",
+	})
+	return nil
+}
+
+// Updated reconcileService method
+func (r *TenantReconciler) reconcileService(ctx context.Context, tenant *tenantv1alpha1.Tenant, svc tenantv1alpha1.ServiceSpec) error {
+    log := log.FromContext(ctx)
+    deployment := r.serviceDeployment(tenant, svc)
+    // Remove cross-namespace owner reference
+    // if err := controllerutil.SetControllerReference(tenant, deployment, r.Scheme); err != nil {
+    //     log.Error(err, "Failed to set controller reference for deployment", "service", svc.Name)
+    //     return err
+    // }
+    if err := r.Create(ctx, deployment); err != nil && !errors.IsAlreadyExists(err) {
+        log.Error(err, "Failed to create deployment", "service", svc.Name)
+        return err
+    }
+    
+    service := r.kubernetesService(tenant, svc)
+    // Remove cross-namespace owner reference
+    // if err := controllerutil.SetControllerReference(tenant, service, r.Scheme); err != nil {
+    //     log.Error(err, "Failed to set controller reference for service", "service", svc.Name)
+    //     return err
+    // }
+    if err := r.Create(ctx, service); err != nil && !errors.IsAlreadyExists(err) {
+        log.Error(err, "Failed to create service", "service", svc.Name)
+        return err
+    }
+    log.Info("Successfully reconciled service", "service", svc.Name)
+    return nil
+}
+
+// Updated reconcileIngress method
+func (r *TenantReconciler) reconcileIngress(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
+	pathType := networkingv1.PathTypePrefix
+	
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-ingress", tenant.Name),
+			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+			Labels: map[string]string{
+				"tenant.rezenkai.com/name": tenant.Name,
+				"app.kubernetes.io/managed-by": "tenant-orchestrator",
+				"app.kubernetes.io/part-of": "tenant-infrastructure",
+			},
+		},
+		Spec: networkingv1.IngressSpec{
+			// ИСПРАВЛЕНО: Добавляем rules вместо пустого spec
+			Rules: []networkingv1.IngressRule{
+				{
+					Host: fmt.Sprintf("%s.example.com", tenant.Name), // или используйте домен из tenant.Spec.Domains
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/",
+									PathType: &pathType,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: fmt.Sprintf("%s-web-app-svc", tenant.Name),
+											Port: networkingv1.ServiceBackendPort{
+												Number: 80,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	
+	// Не устанавливаем owner reference для cross-namespace ресурсов
+	if err := r.Create(ctx, ingress); err != nil && !errors.IsAlreadyExists(err) {
+		return err
 	}
 	return nil
 }
 
-// Notify AuthService of tenant readiness via HTTP POST
-func (r *TenantReconciler) notifyTenantReady(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
-	log := log.FromContext(ctx).WithValues("tenant", tenant.Name)
-	log.Info("Notifying tenant readiness via HTTP POST", "tenantId", tenant.Name)
-
-	// Prepare the HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", authServiceURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create HTTP request: %v", err)
-	}
-
-	// Add tenantId in the body or headers (example with JSON body)
-	req.Header.Set("Content-Type", "application/json")
-	payload := fmt.Sprintf(`{"tenantId": "%s", "status": "ready"}`, tenant.Name)
-	req.Body = io.NopCloser(strings.NewReader(payload))
-
-	// Make the HTTP request
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to notify AuthService: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code from AuthService: %d", resp.StatusCode)
-	}
-
-	log.Info("Successfully notified AuthService", "tenantId", tenant.Name)
-	return nil
-}
-
-// Helper: Database StatefulSet
+// Updated helper methods with proper labels
 func (r *TenantReconciler) databaseStatefulSet(tenant *tenantv1alpha1.Tenant) *appsv1.StatefulSet {
 	replicas := int32(1)
 	labels := map[string]string{
 		"app":    "postgres",
 		"tenant": tenant.Name,
+		"tenant.rezenkai.com/name": tenant.Name,
+		"app.kubernetes.io/managed-by": "tenant-orchestrator",
+		"app.kubernetes.io/part-of": "tenant-infrastructure",
+		"app.kubernetes.io/component": "database",
 	}
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-db", tenant.Name),
 			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+			Labels:    labels,
 		},
 		Spec: appsv1.StatefulSetSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "postgres", "tenant": tenant.Name}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "postgres"}}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "postgres",
+						Image: fmt.Sprintf("postgres:%s", tenant.Spec.Database.Version),
+						Env: []corev1.EnvVar{
+							{Name: "POSTGRES_DB", Value: fmt.Sprintf("tenant_%s_db", tenant.Name)},
+							{Name: "POSTGRES_USER", Value: fmt.Sprintf("tenant_%s", tenant.Name)},
+							{Name: "POSTGRES_PASSWORD", Value: "SecurePassword123!"},
+						},
+						Ports: []corev1.ContainerPort{{ContainerPort: 5432}},
+					}},
+				},
 			},
 		},
 	}
 }
 
-// Helper: Service Deployment
+// Updated service deployment with proper labels
 func (r *TenantReconciler) serviceDeployment(tenant *tenantv1alpha1.Tenant, svc tenantv1alpha1.ServiceSpec) *appsv1.Deployment {
 	labels := map[string]string{
 		"app":     svc.Name,
 		"tenant":  tenant.Name,
 		"version": svc.Version,
+		"tenant.rezenkai.com/name": tenant.Name,
+		"app.kubernetes.io/managed-by": "tenant-orchestrator",
+		"app.kubernetes.io/part-of": "tenant-infrastructure",
+		"app.kubernetes.io/component": "service",
 	}
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", tenant.Name, svc.Name),
 			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &svc.Replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": svc.Name, "tenant": tenant.Name}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: svc.Name}}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  svc.Name,
+						Image: fmt.Sprintf("nginx:latest"), // Default image for testing
+						Env:   svc.Env,
+						Ports: []corev1.ContainerPort{{ContainerPort: 80}},
+					}},
+				},
 			},
 		},
 	}
 }
 
-// Helper: Kubernetes Service
+// Updated kubernetes service with proper labels
 func (r *TenantReconciler) kubernetesService(tenant *tenantv1alpha1.Tenant, svc tenantv1alpha1.ServiceSpec) *corev1.Service {
 	labels := map[string]string{
 		"app":    svc.Name,
 		"tenant": tenant.Name,
+		"tenant.rezenkai.com/name": tenant.Name,
+		"app.kubernetes.io/managed-by": "tenant-orchestrator",
+		"app.kubernetes.io/part-of": "tenant-infrastructure",
+		"app.kubernetes.io/component": "service",
 	}
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s-svc", tenant.Name, svc.Name),
 			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+			Labels:    labels,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: labels,
-			Ports:    []corev1.ServicePort{{Port: 80}},
+			Selector: map[string]string{"app": svc.Name, "tenant": tenant.Name},
+			Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intstr.FromInt(80)}},
 		},
 	}
-}
-
-func (r *TenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &appsv1.Deployment{}, ownerKey, func(rawObj client.Object) []string {
-		deployment := rawObj.(*appsv1.Deployment)
-		owner := metav1.GetControllerOf(deployment)
-		if owner == nil || owner.APIVersion != apiVersion || owner.Kind != "Tenant" {
-			return nil
-		}
-		return []string{owner.Name}
-	}); err != nil {
-		return err
-	}
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&tenantv1alpha1.Tenant{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&appsv1.StatefulSet{}).
-		Owns(&corev1.Service{}).
-		Owns(&networkingv1.Ingress{}).
-		Owns(&batchv1.Job{}).
-		WithEventFilter(predicate.GenerationChangedPredicate{}).
-		Complete(r)
 }

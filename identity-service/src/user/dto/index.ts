@@ -34,6 +34,10 @@ export class CreateUserDto {
 
   @IsOptional()
   @IsString()
+  tenantId?: string;
+
+  @IsOptional()
+  @IsString()
   timezone?: string;
 
   @IsOptional()
@@ -59,6 +63,10 @@ export class CreateUserDto {
   @IsOptional()
   @IsBoolean()
   marketingNotifications?: boolean;
+
+  @IsOptional()
+  @IsString()
+  role?: string;
 }
 
 export class UpdateUserDto {
@@ -129,6 +137,14 @@ export class UpdateUserDto {
   @IsOptional()
   @IsBoolean()
   marketingNotifications?: boolean;
+
+  @IsOptional()
+  @IsString()
+  tenantId?: string;
+
+  @IsOptional()
+  @IsString()
+  role?: string;
 }
 
 export class UserResponseDto {
@@ -158,6 +174,8 @@ export class UserResponseDto {
   lastLogin?: Date;
   createdAt: Date;
   updatedAt: Date;
+  tenantId?: string;
+  role?: string;
 }
 
 export class ChangePasswordDto {

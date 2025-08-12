@@ -269,6 +269,33 @@ app.use(
 )
 
 app.use(
+	'/:tenantId/api/v1/tenants',
+	validateTenantLimits('tenant-creation'), // Optional: Add if tenant limits apply
+	createProxyMiddleware({
+		target: process.env.TENANT_ORCHESTRATOR_URL || 'http://localhost:8015',
+		changeOrigin: true,
+		pathRewrite: {
+			'^/[^/]+/api/v1/tenants': '/api/v1/tenants', // Remove tenant prefix
+		},
+		onProxyReq: (proxyReq, req, res) => {
+			// Add tenant information to headers
+			const tenantId = req.params.tenantId
+			proxyReq.setHeader('X-Tenant-ID', tenantId)
+
+			logger.info('Proxying tenant creation request', {
+				tenantId,
+				originalUrl: req.originalUrl,
+				target: process.env.TENANT_ORCHESTRATOR_URL || 'http://localhost:8015',
+			})
+		},
+		onError: (err, req, res) => {
+			logger.error('Tenant orchestrator proxy error:', err)
+			res.status(503).json({ error: 'Tenant orchestrator service unavailable' })
+		},
+	})
+)
+
+app.use(
 	'/api/v1/tenants',
 	validateTenantLimits('tenants'), // Optional: Add if tenant limits apply
 	createProxyMiddleware({

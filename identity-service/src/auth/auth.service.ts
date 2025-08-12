@@ -5,7 +5,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import { firstValueFrom } from 'rxjs'; // Add RxJS
+import { firstValueFrom } from 'rxjs';
+import { v4 as uuidv4 } from 'uuid'; // Add this import at the top
 import { TwoFactorService } from '../two-factor/two-factor.service';
 import { UserService } from '../user/user.service';
 import { JwtService } from './jwt.service';
@@ -40,36 +41,45 @@ export class AuthService {
   ) {}
 
   async login(loginDto: LoginDto): Promise<TokenPair> {
-    const { email, password, twoFactorCode, tenantId } = loginDto;
+    const { email, password, twoFactorCode } = loginDto;
+
     try {
-      console.log(
-        `Login attempt for email: ${email} at 01:53 AM +05, Tuesday, August 12, 2025`,
-      );
+      console.log(`Login attempt for email: ${email}`);
+
       const user = await this.userService.findActiveByEmail(email);
       if (!user) {
         console.log(`User not found for email: ${email}`);
         throw new InvalidCredentialsException('Invalid email or password');
       }
+
       console.log(
-        `User found: ${user.email}, isActive: ${user.isActive}, isVerified: ${user.isVerified}`,
+        `User found: ${user.email}, tenantId: ${user.tenantId}, role: ${user.role}`,
       );
+
+      // Check account lock
       if (user.lockedUntil && user.lockedUntil > new Date()) {
         console.log(`Account locked until: ${user.lockedUntil}`);
         throw new AccountLockedException('Account is temporarily locked');
       }
+
+      // Check password
       if (!user.hashedPassword) {
         console.log(`User ${user.email} has no local password (Auth0 managed)`);
         throw new InvalidCredentialsException('Invalid email or password');
       }
+
       const isPasswordValid = await bcrypt.compare(
         password,
         user.hashedPassword,
       );
       console.log(`Password valid: ${isPasswordValid}`);
+
       if (!isPasswordValid) {
         await this.userService.incrementFailedLoginAttempts(user.id);
         throw new InvalidCredentialsException('Invalid email or password');
       }
+
+      // Handle 2FA if enabled
       if (user.twoFactorEnabled) {
         console.log(`2FA enabled for user: ${email}`);
         if (!twoFactorCode) {
@@ -77,6 +87,7 @@ export class AuthService {
             'Two-factor authentication code required',
           );
         }
+
         const isValid2FA = await this.twoFactorService.verifyTwoFactorCode(
           user.id,
           twoFactorCode,
@@ -87,19 +98,25 @@ export class AuthService {
             'Invalid two-factor authentication code',
           );
         }
-        console.log(`2FA verification successful for user: ${email}`);
       }
+
+      // Reset failed login attempts
       await this.userService.resetFailedLoginAttempts(user.id);
-      const resolvedTenantId = tenantId || user.tenantId || 'default-tenant'; // Use user.tenantId
-      const role = user.role || (user.isSuperuser ? 'ADMIN' : 'MANAGER');
+
+      // Use user's actual tenant ID (not from request)
+      const userTenantId = user.tenantId || 'default-tenant';
+      const userRole = user.role || (user.isSuperuser ? 'ADMIN' : 'USER');
+
       console.log(
-        `Generating tokens for user: ${email}, tenant: ${resolvedTenantId}, role: ${role}`,
+        `Generating tokens for user: ${email}, tenant: ${userTenantId}, role: ${userRole}`,
       );
+
       const tokenPair = this.jwtService.generateTokenPair(
         user,
-        resolvedTenantId,
-        role,
+        userTenantId,
+        userRole,
       );
+
       console.log(`Login successful for user: ${email}`);
       return tokenPair;
     } catch (error) {
@@ -116,20 +133,24 @@ export class AuthService {
     }
   }
 
+  // In your auth.service.ts, update the register method to generate proper UUID:
+
   async register(
     registerDto: RegisterDto,
   ): Promise<{ message: string; userId: string; email: string }> {
     const { email, password, passwordConfirm, firstName, lastName } =
       registerDto;
+
     try {
-      console.log(
-        `Registration attempt for email: ${email} at 01:50 AM +05, Tuesday, August 12, 2025`,
-      );
+      console.log(`Registration attempt for email: ${email}`);
+
       if (password !== passwordConfirm) {
         console.log('Password confirmation mismatch');
         throw new BadRequestException('Passwords do not match');
       }
+
       this.validatePasswordStrength(password);
+
       const existingUser = await this.userService.findByEmail(email);
       if (existingUser) {
         console.log(`User already exists: ${email}`);
@@ -137,57 +158,195 @@ export class AuthService {
           `User with email ${email} already exists`,
         );
       }
+
+      // Generate proper UUID for tenant ID
+      const tenantId = uuidv4();
+      // Also generate a human-readable tenant slug for routing
+      const tenantSlug = email.split('@')[0] + '-' + Date.now().toString(36);
+
+      console.log(
+        `Generated tenant ID: ${tenantId} (slug: ${tenantSlug}) for user: ${email}`,
+      );
+
+      // Create user with tenant UUID
       const user = await this.userService.create({
         email,
-        password, // UserService will handle hashing
+        password,
         firstName,
         lastName,
-        tenantId: 'pending', // Placeholder until tenant is created
-        role: 'ADMIN', // First user is tenant admin
-      } as CreateUserDto); // Type assertion to match updated DTO
-      const tenantId = email.split('@')[0] + '-' + Date.now().toString(36); // Example: john-66b9f1a
-      const tenantRequest = {
-        organizationName: `${firstName} ${lastName}'s Org`,
-        tier: 'starter',
-        domains: [],
-        resources: {
-          cpu: { request: '200m', limit: '500m' },
-          memory: { request: '256Mi', limit: '512Mi' },
-          storage: { size: '10Gi' },
-        },
-        database: { type: 'postgres', version: '15' },
-        tenantId,
-      };
-      await firstValueFrom(
-        this.httpService.post(
-          `http://localhost:3001/${tenantId}/api/v1/tenants`,
-          tenantRequest,
-          {
-            headers: {
-              Authorization: `Bearer ${await this.jwtService.generateInternalToken()}`,
-            },
-          },
-        ),
-      );
+        tenantId, // Use UUID here
+        role: 'ADMIN',
+      });
+
       console.log(
-        `User created successfully: ${user.email} with ID: ${user.id}, tenant creation requested for ${tenantId}`,
+        `User created successfully: ${user.email} with ID: ${user.id}, tenant: ${tenantId}`,
       );
+
+      // Try to create tenant infrastructure using the slug for routing
+      try {
+        await this.createTenantInfrastructure(
+          tenantSlug,
+          firstName,
+          lastName,
+          tenantId,
+        );
+        console.log(
+          `Tenant infrastructure creation initiated for: ${tenantSlug}`,
+        );
+      } catch (error) {
+        console.error(
+          `Tenant infrastructure creation failed for ${tenantSlug}:`,
+          error.message,
+        );
+        // Continue with registration even if tenant creation fails
+      }
+
       return {
         message:
-          'Registration successful. Tenant provisioning in progress. You can log in after approval.',
+          'Registration successful. Your tenant is being provisioned. You can now log in.',
         userId: user.id,
         email: user.email,
       };
     } catch (error) {
-      console.error(
-        `Registration error for ${email} at 01:50 AM +05, Tuesday, August 12, 2025:`,
-        error.message,
-      );
+      console.error(`Registration error for ${email}:`, error.message);
       if (error instanceof BadRequestException) {
         throw error;
       }
       throw new BadRequestException('Registration failed');
     }
+  }
+
+  // Update the tenant infrastructure creation method
+  private async createTenantInfrastructure(
+    tenantSlug: string,
+    firstName: string,
+    lastName: string,
+    tenantId: string,
+  ): Promise<void> {
+    try {
+      console.log(`Creating tenant: ${tenantSlug} (${tenantId})`);
+
+      // Log tenant details (оставляем для отладки)
+      console.log('Tenant Details:', {
+        id: tenantId,
+        slug: tenantSlug,
+        organizationName: `${firstName} ${lastName}'s Organization`,
+        tier: 'starter',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+      });
+
+      // Store in database (можно оставить для локального хранения)
+      await this.storeTenantInDatabase(
+        tenantId,
+        tenantSlug,
+        firstName,
+        lastName,
+      );
+
+      // ДОБАВЛЯЕМ: HTTP-вызов к Tenant Orchestrator
+      await this.callTenantOrchestrator(
+        tenantSlug,
+        firstName,
+        lastName,
+        tenantId,
+      );
+
+      console.log(`Tenant ${tenantSlug} created successfully`);
+    } catch (error) {
+      console.error('Tenant creation failed:', error.message);
+      // Don't throw - allow user registration to continue
+    }
+  }
+
+  private async callTenantOrchestrator(
+    tenantSlug: string,
+    firstName: string,
+    lastName: string,
+    tenantId: string,
+  ): Promise<void> {
+    const tenantRequest = {
+      name: tenantSlug,
+      organizationName: `${firstName} ${lastName}'s Organization`,
+      tier: 'starter',
+      resources: {
+        cpu: { request: '200m', limit: '500m' },
+        memory: { request: '256Mi', limit: '512Mi' },
+        storage: { size: '10Gi' },
+      },
+      services: [
+        {
+          name: 'web-app',
+          version: 'v1.0.0',
+          replicas: 1,
+        },
+      ],
+      database: { type: 'postgres', version: '15' },
+      domains: [],
+      features: { analytics: true },
+      metadata: {
+        tenantId,
+        tenantSlug,
+      },
+    };
+
+    const internalToken = await this.jwtService.generateInternalToken();
+
+    const headers = {
+      Authorization: `Bearer ${internalToken}`,
+      'Content-Type': 'application/json',
+      'X-User-Role': 'ADMIN',
+      'X-Tenant-ID': tenantSlug,
+      'X-Tenant-UUID': tenantId,
+    };
+
+    console.log(
+      `🚀 Calling Tenant Orchestrator: http://localhost:3001/${tenantSlug}/api/v1/tenants`,
+    );
+
+    const response = await firstValueFrom(
+      this.httpService.post(
+        `http://localhost:3001/${tenantSlug}/api/v1/tenants`,
+        tenantRequest,
+        {
+          headers,
+          timeout: 15000,
+        },
+      ),
+    );
+
+    console.log(
+      `✅ Tenant Orchestrator response:`,
+      response.status,
+      response.data,
+    );
+  }
+
+  private async storeTenantInDatabase(
+    tenantId: string,
+    tenantSlug: string,
+    firstName: string,
+    lastName: string,
+  ): Promise<void> {
+    const tenantData = {
+      id: tenantId,
+      slug: tenantSlug,
+      organizationName: `${firstName} ${lastName}'s Organization`,
+      tier: 'starter',
+      status: 'active',
+      settings: {
+        maxUsers: 10,
+        maxStorage: '10GB',
+        features: ['crm', 'contacts', 'deals'],
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    console.log('Storing tenant in database:', tenantData);
+
+    // TODO: Добавить сохранение в базу данных
+    // await this.tenantsRepository.save(tenantData);
   }
 
   async refreshToken(refreshTokenDto: RefreshTokenDto): Promise<TokenPair> {

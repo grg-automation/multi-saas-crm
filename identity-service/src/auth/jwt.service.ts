@@ -72,13 +72,17 @@ export class JwtService {
   // New method for internal token generation
   async generateInternalToken(): Promise<string> {
     const claims = {
+      sub: 'system',
       type: 'internal',
+      role: 'SYSTEM',
+      tenant_id: 'system',
       iat: Math.floor(Date.now() / 1000),
+      iss: 'identity-service',
+      aud: 'api-gateway',
     };
+
     return this.nestJwtService.sign(claims, {
-      secret:
-        this.configService.get<string>('JWT_INTERNAL_SECRET') ||
-        this.configService.get<string>('JWT_SECRET'),
+      secret: this.configService.get<string>('JWT_SECRET'), // Use same secret for simplicity
       expiresIn: '1h', // Short-lived token
     });
   }
