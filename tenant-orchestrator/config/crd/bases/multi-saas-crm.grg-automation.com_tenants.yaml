@@ -233,7 +233,8 @@ spec:
                         type: string
                       status:
                         type: string
-                        enum: [True, False, Unknown]
+                        # FIXED: Use the standard Kubernetes condition status enum
+                        enum: ['True', 'False', 'Unknown']
                       lastTransitionTime:
                         type: string
                         format: date-time

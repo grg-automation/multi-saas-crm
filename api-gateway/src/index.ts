@@ -88,27 +88,6 @@ app.use(
 	})
 )
 
-// ===== TENANT CREATION ROUTE =====
-app.post(
-	'/:tenantId/api/v1/tenants',
-	authMiddleware, // Ensure internal auth
-	(req, res, next) => {
-		req.headers['X-Tenant-ID'] = req.params.tenantId // Pass tenantId to downstream
-		next()
-	},
-	createProxyMiddleware({
-		target: serviceRegistry.getService('tenantOrchestrator').url,
-		changeOrigin: true,
-		pathRewrite: {
-			'^/:tenantId/api/v1/tenants': '/api/v1/tenants', // Strip tenantId for orchestrator
-		},
-		onError: (err, req, res) => {
-			logger.error('Tenant orchestrator proxy error:', err)
-			res.status(503).json({ error: 'Tenant orchestrator unavailable' })
-		},
-	})
-)
-
 // ===== PROTECTED ROUTES (REQUIRE AUTH + TENANT) =====
 // Apply auth and tenant middleware to all protected routes
 app.use('/api/v1', authMiddleware, tenantMiddleware, tenantRateLimit)
@@ -252,6 +231,70 @@ app.use(
 	})
 )
 
+// ===== TENANT CREATION ROUTE =====
+// This should be the ONLY tenant creation route - remove any duplicates
+app.use(
+	'/:tenantId/api/v1/tenants',
+	// Add debug logging first
+	(req, res, next) => {
+		console.log('🎯 Tenant creation route hit!')
+		console.log('📍 URL:', req.originalUrl)
+		console.log('🔧 Method:', req.method)
+		console.log('🎫 Tenant ID:', req.params.tenantId)
+		console.log(
+			'🔑 Auth Header:',
+			req.headers.authorization ? 'Present' : 'Missing'
+		)
+		next()
+	},
+	// Use authMiddleware to validate the internal token
+	authMiddleware,
+	// Add tenant ID to headers for downstream services
+	(req, res, next) => {
+		req.headers['X-Tenant-ID'] = req.params.tenantId
+		console.log('🏷️ Added X-Tenant-ID header:', req.params.tenantId)
+		next()
+	},
+	// Proxy to tenant orchestrator
+	createProxyMiddleware({
+		target: process.env.TENANT_ORCHESTRATOR_URL || 'http://localhost:8015',
+		changeOrigin: true,
+		pathRewrite: {
+			'^/[^/]+/api/v1/tenants': '/api/v1/tenants', // Remove tenant prefix
+		},
+		onProxyReq: (proxyReq, req, res) => {
+			const tenantId = req.params.tenantId
+			proxyReq.setHeader('X-Tenant-ID', tenantId)
+
+			console.log('🔄 Proxying tenant creation request', {
+				tenantId,
+				method: req.method,
+				originalUrl: req.originalUrl,
+				targetUrl: proxyReq.path,
+				target: process.env.TENANT_ORCHESTRATOR_URL || 'http://localhost:8015',
+			})
+
+			// Handle POST body forwarding
+			if (req.body && (req.method === 'POST' || req.method === 'PUT')) {
+				const bodyData = JSON.stringify(req.body)
+				proxyReq.setHeader('Content-Type', 'application/json')
+				proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData))
+				proxyReq.write(bodyData)
+			}
+		},
+		onProxyRes: (proxyRes, req, res) => {
+			console.log('📥 Tenant orchestrator response:', {
+				statusCode: proxyRes.statusCode,
+				statusMessage: proxyRes.statusMessage,
+			})
+		},
+		onError: (err, req, res) => {
+			console.error('❌ Tenant orchestrator proxy error:', err)
+			res.status(503).json({ error: 'Tenant orchestrator service unavailable' })
+		},
+	})
+)
+
 // ===== MESSAGING SERVICE ROUTES =====
 app.use(
 	'/api/v1/messaging',
@@ -264,33 +307,6 @@ app.use(
 		onError: (err, req, res) => {
 			logger.error('Messaging proxy error:', err)
 			res.status(503).json({ error: 'Messaging service unavailable' })
-		},
-	})
-)
-
-app.use(
-	'/:tenantId/api/v1/tenants',
-	validateTenantLimits('tenant-creation'), // Optional: Add if tenant limits apply
-	createProxyMiddleware({
-		target: process.env.TENANT_ORCHESTRATOR_URL || 'http://localhost:8015',
-		changeOrigin: true,
-		pathRewrite: {
-			'^/[^/]+/api/v1/tenants': '/api/v1/tenants', // Remove tenant prefix
-		},
-		onProxyReq: (proxyReq, req, res) => {
-			// Add tenant information to headers
-			const tenantId = req.params.tenantId
-			proxyReq.setHeader('X-Tenant-ID', tenantId)
-
-			logger.info('Proxying tenant creation request', {
-				tenantId,
-				originalUrl: req.originalUrl,
-				target: process.env.TENANT_ORCHESTRATOR_URL || 'http://localhost:8015',
-			})
-		},
-		onError: (err, req, res) => {
-			logger.error('Tenant orchestrator proxy error:', err)
-			res.status(503).json({ error: 'Tenant orchestrator service unavailable' })
 		},
 	})
 )

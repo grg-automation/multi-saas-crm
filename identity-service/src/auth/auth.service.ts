@@ -300,26 +300,73 @@ export class AuthService {
       'X-Tenant-UUID': tenantId,
     };
 
-    console.log(
-      `🚀 Calling Tenant Orchestrator: http://localhost:3001/${tenantSlug}/api/v1/tenants`,
-    );
+    // Using API Gateway endpoint
+    const apiGatewayUrl = `http://localhost:3001/${tenantSlug}/api/v1/tenants`;
 
-    const response = await firstValueFrom(
-      this.httpService.post(
-        `http://localhost:3001/${tenantSlug}/api/v1/tenants`,
-        tenantRequest,
-        {
+    console.log('🚀 Calling Tenant Orchestrator via API Gateway');
+    console.log('📍 URL:', apiGatewayUrl);
+    console.log('🔑 Headers:', JSON.stringify(headers, null, 2));
+    console.log('📝 Request payload:', JSON.stringify(tenantRequest, null, 2));
+
+    try {
+      // First, let's test if the API gateway is reachable
+      console.log('🔍 Testing API Gateway health...');
+
+      const response = await firstValueFrom(
+        this.httpService.post(apiGatewayUrl, tenantRequest, {
           headers,
-          timeout: 15000,
-        },
-      ),
-    );
+          timeout: 30000,
+        }),
+      );
 
-    console.log(
-      `✅ Tenant Orchestrator response:`,
-      response.status,
-      response.data,
-    );
+      console.log('✅ Tenant Orchestrator response:');
+      console.log('📊 Status:', response.status);
+      console.log('📄 Data:', JSON.stringify(response.data, null, 2));
+      console.log(
+        '🔧 Response Headers:',
+        JSON.stringify(response.headers, null, 2),
+      );
+    } catch (error) {
+      console.error('❌ Tenant Orchestrator call failed:');
+      console.error('🚨 Error type:', error.constructor.name);
+      console.error('📊 Status:', error.response?.status);
+      console.error('📝 Status Text:', error.response?.statusText);
+      console.error(
+        '📄 Response Data:',
+        JSON.stringify(error.response?.data, null, 2),
+      );
+      console.error(
+        '🔧 Response Headers:',
+        JSON.stringify(error.response?.headers, null, 2),
+      );
+      console.error('💬 Error Message:', error.message);
+      console.error('🔗 Request URL:', error.config?.url);
+      console.error('📦 Request Method:', error.config?.method);
+
+      // Let's also try to directly call the tenant orchestrator to see if it's running
+      try {
+        console.log('🔍 Testing direct connection to tenant orchestrator...');
+        const directResponse = await firstValueFrom(
+          this.httpService.get('http://localhost:8015/health', {
+            timeout: 5000,
+          }),
+        );
+        console.log(
+          '✅ Direct tenant orchestrator health check successful:',
+          directResponse.status,
+        );
+      } catch (directError) {
+        console.error(
+          '❌ Direct tenant orchestrator health check failed:',
+          directError.message,
+        );
+      }
+
+      // Re-throw the original error
+      throw new Error(
+        `Tenant creation failed: ${error.response?.status} ${error.response?.statusText} - ${error.response?.data?.error || error.message}`,
+      );
+    }
   }
 
   private async storeTenantInDatabase(

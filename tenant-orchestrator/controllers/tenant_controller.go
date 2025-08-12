@@ -226,7 +226,7 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 	if err := r.reconcileDatabase(ctx, tenant); err != nil {
 		meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
 			Type:    "DatabaseReady",
-			Status:  "False", // ИСПРАВЛЕНО: строка
+			Status:  metav1.ConditionFalse, // This resolves to "False"
 			Reason:  "DatabaseError",
 			Message: err.Error(),
 		})
@@ -244,7 +244,7 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 		if err := r.reconcileBackup(ctx, tenant); err != nil {
 			meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
 				Type:    "BackupReady",
-				Status:  "False", // ИСПРАВЛЕНО: строка
+				Status:  metav1.ConditionFalse, // This resolves to "False"
 				Reason:  "BackupError",
 				Message: err.Error(),
 			})
@@ -252,7 +252,7 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 		}
 		meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
 			Type:    "BackupReady",
-			Status:  "True", // ИСПРАВЛЕНО: строка
+			Status:  metav1.ConditionTrue, // This resolves to "True"
 			Reason:  "BackupProvisioned",
 			Message: "Backups are configured",
 		})
@@ -264,21 +264,38 @@ func (r *TenantReconciler) reconcileTenant(ctx context.Context, tenant *tenantv1
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
+	// Check health but don't fail if database isn't ready yet
 	healthy, err := r.HealthMonitor.CheckTenantHealth(ctx, tenant)
 	if err != nil {
-		log.Error(err, "Health check failed")
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+		log.Info("Health check reported issues, will retry", "error", err.Error())
+		// Don't return error, just continue and retry later
 	}
+
 	if healthy {
 		tenant.Status.Phase = "Active"
+		meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionTrue, // This resolves to "True"
+			Reason:  "TenantActive",
+			Message: "Tenant is active and healthy",
+		})
 		r.EventRecorder.Event(tenant, corev1.EventTypeNormal, "Active", "Tenant is active and healthy")
 		if err := r.notifyTenantReady(ctx, tenant); err != nil {
 			log.Error(err, "Failed to notify tenant readiness")
 		}
+	} else {
+		meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse, // This resolves to "False"
+			Reason:  "TenantNotReady",
+			Message: "Tenant services are not ready yet",
+		})
 	}
 
+	// Update service discovery (with proper error handling)
 	if err := r.Discovery.UpdateServiceEndpoints(ctx, tenant); err != nil {
 		log.Error(err, "Failed to update service discovery")
+		// Don't fail the reconciliation for discovery errors
 	}
 
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
@@ -368,6 +385,34 @@ func (r *TenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *TenantReconciler) reconcileDatabase(ctx context.Context, tenant *tenantv1alpha1.Tenant) error {
+	// Create database service first
+	dbService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-db-svc", tenant.Name),
+			Namespace: fmt.Sprintf("tenant-%s", tenant.Name),
+			Labels: map[string]string{
+				"tenant.rezenkai.com/name": tenant.Name,
+				"app.kubernetes.io/managed-by": "tenant-orchestrator",
+				"app.kubernetes.io/part-of": "tenant-infrastructure",
+				"app.kubernetes.io/component": "database",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": "postgres", "tenant": tenant.Name},
+			Ports: []corev1.ServicePort{
+				{
+					Port:       5432,
+					TargetPort: intstr.FromInt(5432),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+
+	if err := r.Create(ctx, dbService); err != nil && !errors.IsAlreadyExists(err) {
+		return err
+	}
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-db-credentials", tenant.Name),
@@ -385,27 +430,22 @@ func (r *TenantReconciler) reconcileDatabase(ctx context.Context, tenant *tenant
 			"database": []byte(fmt.Sprintf("tenant_%s_db", tenant.Name)),
 		},
 	}
-	// Remove cross-namespace owner reference
-	// if err := controllerutil.SetControllerReference(tenant, secret, r.Scheme); err != nil {
-	//     return err
-	// }
+
 	if err := r.Create(ctx, secret); err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	}
 
 	statefulSet := r.databaseStatefulSet(tenant)
-	// Remove cross-namespace owner reference
-	// if err := controllerutil.SetControllerReference(tenant, statefulSet, r.Scheme); err != nil {
-	//     return err
-	// }
 	if err := r.Create(ctx, statefulSet); err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	}
 
 	tenant.Status.DatabaseStatus.ConnectionURL = fmt.Sprintf("%s-db-svc.tenant-%s.svc.cluster.local:5432/%s", tenant.Name, tenant.Name, fmt.Sprintf("tenant_%s_db", tenant.Name))
+	
+	// FIXED: Use the actual Kubernetes constants that resolve to proper capitalized strings
 	meta.SetStatusCondition(&tenant.Status.Conditions, metav1.Condition{
 		Type:    "DatabaseReady",
-		Status:  "True", // ИЗМЕНЕНО: строка вместо константы
+		Status:  metav1.ConditionTrue, // This resolves to "True"
 		Reason:  "DatabaseProvisioned",
 		Message: "Database is provisioned and ready",
 	})
@@ -500,6 +540,7 @@ func (r *TenantReconciler) databaseStatefulSet(tenant *tenantv1alpha1.Tenant) *a
 		"app.kubernetes.io/part-of": "tenant-infrastructure",
 		"app.kubernetes.io/component": "database",
 	}
+	
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-db", tenant.Name),
@@ -507,21 +548,66 @@ func (r *TenantReconciler) databaseStatefulSet(tenant *tenantv1alpha1.Tenant) *a
 			Labels:    labels,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "postgres", "tenant": tenant.Name}},
+			Replicas:    &replicas,
+			ServiceName: fmt.Sprintf("%s-db-svc", tenant.Name),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "postgres", 
+					"tenant": tenant.Name,
+				},
+			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:  "postgres",
-						Image: fmt.Sprintf("postgres:%s", tenant.Spec.Database.Version),
-						Env: []corev1.EnvVar{
-							{Name: "POSTGRES_DB", Value: fmt.Sprintf("tenant_%s_db", tenant.Name)},
-							{Name: "POSTGRES_USER", Value: fmt.Sprintf("tenant_%s", tenant.Name)},
-							{Name: "POSTGRES_PASSWORD", Value: "SecurePassword123!"},
+					Containers: []corev1.Container{
+						{
+							Name:  "postgres",
+							Image: fmt.Sprintf("postgres:%s", tenant.Spec.Database.Version),
+							Env: []corev1.EnvVar{
+								{Name: "POSTGRES_DB", Value: fmt.Sprintf("tenant_%s_db", tenant.Name)},
+								{Name: "POSTGRES_USER", Value: fmt.Sprintf("tenant_%s", tenant.Name)},
+								{Name: "POSTGRES_PASSWORD", Value: "SecurePassword123!"},
+								{Name: "PGDATA", Value: "/var/lib/postgresql/data/pgdata"},
+							},
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 5432, Name: "postgres"},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "postgres-storage",
+									MountPath: "/var/lib/postgresql/data",
+								},
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("128Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("500m"),
+									corev1.ResourceMemory: resource.MustParse("512Mi"),
+								},
+							},
 						},
-						Ports: []corev1.ContainerPort{{ContainerPort: 5432}},
-					}},
+					},
+				},
+			},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "postgres-storage",
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{
+							corev1.ReadWriteOnce,
+						},
+						// FIXED: Use VolumeResourceRequirements instead of ResourceRequirements
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceStorage: resource.MustParse(tenant.Spec.Resources.Storage.Size),
+							},
+						},
+					},
 				},
 			},
 		},
@@ -529,6 +615,7 @@ func (r *TenantReconciler) databaseStatefulSet(tenant *tenantv1alpha1.Tenant) *a
 }
 
 // Updated service deployment with proper labels
+// Updated service deployment with proper resource specifications
 func (r *TenantReconciler) serviceDeployment(tenant *tenantv1alpha1.Tenant, svc tenantv1alpha1.ServiceSpec) *appsv1.Deployment {
 	labels := map[string]string{
 		"app":     svc.Name,
@@ -539,6 +626,7 @@ func (r *TenantReconciler) serviceDeployment(tenant *tenantv1alpha1.Tenant, svc 
 		"app.kubernetes.io/part-of": "tenant-infrastructure",
 		"app.kubernetes.io/component": "service",
 	}
+	
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", tenant.Name, svc.Name),
@@ -547,16 +635,61 @@ func (r *TenantReconciler) serviceDeployment(tenant *tenantv1alpha1.Tenant, svc 
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &svc.Replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": svc.Name, "tenant": tenant.Name}},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": svc.Name, 
+					"tenant": tenant.Name,
+				},
+			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:  svc.Name,
-						Image: fmt.Sprintf("nginx:latest"), // Default image for testing
-						Env:   svc.Env,
-						Ports: []corev1.ContainerPort{{ContainerPort: 80}},
-					}},
+					Containers: []corev1.Container{
+						{
+							Name:  svc.Name,
+							Image: fmt.Sprintf("nginx:latest"), // Default image for testing
+							Env:   svc.Env,
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 80, Name: "http"},
+							},
+							// FIXED: Add resource specifications to satisfy ResourceQuota
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("50m"),   // Small request
+									corev1.ResourceMemory: resource.MustParse("64Mi"),  // Small request
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("200m"),  // Within tenant limits
+									corev1.ResourceMemory: resource.MustParse("256Mi"), // Within tenant limits
+								},
+							},
+							// Add liveness and readiness probes
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/",
+										Port: intstr.FromInt(80),
+									},
+								},
+								InitialDelaySeconds: 30,
+								PeriodSeconds:       10,
+								TimeoutSeconds:      5,
+								FailureThreshold:    3,
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/",
+										Port: intstr.FromInt(80),
+									},
+								},
+								InitialDelaySeconds: 5,
+								PeriodSeconds:       5,
+								TimeoutSeconds:      3,
+								FailureThreshold:    3,
+							},
+						},
+					},
 				},
 			},
 		},

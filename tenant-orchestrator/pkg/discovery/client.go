@@ -176,9 +176,15 @@ func (d *Client) RemoveTenant(ctx context.Context, tenant *tenantv1alpha1.Tenant
 	delete(d.cache.endpoints, tenant.Name)
 	delete(d.cache.tenants, tenant.Name)
 	d.cache.mu.Unlock()
-	// Delete discovery ConfigMap
+	
+	// Delete discovery ConfigMap from tenant namespace
 	cm := &corev1.ConfigMap{}
-	err := d.client.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-discovery", tenant.Name), Namespace: "tenant-system"}, cm)
+	tenantNamespace := fmt.Sprintf("tenant-%s", tenant.Name)
+	err := d.client.Get(ctx, types.NamespacedName{
+		Name:      fmt.Sprintf("%s-discovery", tenant.Name), 
+		Namespace: tenantNamespace, // FIXED: Use correct namespace
+	}, cm)
+	
 	if err == nil {
 		return d.client.Delete(ctx, cm)
 	}
@@ -202,19 +208,24 @@ func (d *Client) updateDiscoveryConfigMap(ctx context.Context, tenant *tenantv1a
 	if err != nil {
 		return err
 	}
+	
+	// FIXED: Create ConfigMap in the tenant's namespace instead of "tenant-system"
+	tenantNamespace := fmt.Sprintf("tenant-%s", tenant.Name)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-discovery", tenant.Name),
-			Namespace: "tenant-system",
+			Namespace: tenantNamespace, // Use tenant namespace
 			Labels: map[string]string{
 				"tenant.rezenkai.com/name":   tenant.Name,
 				"app.kubernetes.io/component": "discovery",
+				"app.kubernetes.io/managed-by": "tenant-orchestrator",
 			},
 		},
 		Data: map[string]string{
 			"discovery.json": string(data),
 		},
 	}
+	
 	existingCM := &corev1.ConfigMap{}
 	err = d.client.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cm.Namespace}, existingCM)
 	if err != nil {
@@ -223,7 +234,9 @@ func (d *Client) updateDiscoveryConfigMap(ctx context.Context, tenant *tenantv1a
 		}
 		return err
 	}
+	
 	existingCM.Data = cm.Data
+	existingCM.Labels = cm.Labels // Update labels too
 	return d.client.Update(ctx, existingCM)
 }
 
@@ -283,43 +296,51 @@ type ServiceWatcher struct {
 func (w *ServiceWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx).WithValues("service", req.NamespacedName)
 
+	// Extract tenant name from namespace first
+	tenantName := extractTenantName(req.Namespace)
+	if tenantName == "" {
+		return ctrl.Result{}, nil // Not a tenant namespace
+	}
+
 	// Fetch the Service
 	svc := &corev1.Service{}
 	if err := w.Discovery.client.Get(ctx, req.NamespacedName, svc); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("Service not found, removing from discovery if exists")
-			// Extract tenant name from namespace (tenant-<name>)
-			if tenantName := extractTenantName(req.Namespace); tenantName != "" {
-				w.Discovery.cache.mu.Lock()
-				endpoints := w.Discovery.cache.endpoints[tenantName]
-				var newEndpoints []ServiceEndpoint
-				for _, ep := range endpoints {
-					if ep.Service != req.Name {
-						newEndpoints = append(newEndpoints, ep)
-					}
-				}
-				w.Discovery.cache.endpoints[tenantName] = newEndpoints
-				w.Discovery.cache.mu.Unlock()
-				tenant := &tenantv1alpha1.Tenant{}
-				if err := w.Discovery.client.Get(ctx, types.NamespacedName{Name: tenantName, Namespace: req.Namespace}, tenant); err == nil {
-					w.Discovery.updateDiscoveryConfigMap(ctx, tenant, newEndpoints)
+			
+			// Remove from cache when service is deleted
+			w.Discovery.cache.mu.Lock()
+			endpoints := w.Discovery.cache.endpoints[tenantName]
+			var newEndpoints []ServiceEndpoint
+			for _, ep := range endpoints {
+				if ep.Service != req.Name {
+					newEndpoints = append(newEndpoints, ep)
 				}
 			}
+			w.Discovery.cache.endpoints[tenantName] = newEndpoints
+			w.Discovery.cache.mu.Unlock()
+
+			// Update ConfigMap if tenant exists
+			tenant := &tenantv1alpha1.Tenant{}
+			// FIXED: Look for tenant in "default" namespace, not service namespace
+			if err := w.Discovery.client.Get(ctx, types.NamespacedName{Name: tenantName, Namespace: "default"}, tenant); err == nil {
+				w.Discovery.updateDiscoveryConfigMap(ctx, tenant, newEndpoints)
+			}
+			
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "Failed to get Service")
 		return ctrl.Result{}, err
 	}
 
-	// Extract tenant name from namespace
-	tenantName := extractTenantName(req.Namespace)
-	if tenantName == "" {
-		return ctrl.Result{}, nil // Not a tenant namespace
-	}
-
-	// Fetch tenant
+	// Fetch tenant from default namespace
 	tenant := &tenantv1alpha1.Tenant{}
-	if err := w.Discovery.client.Get(ctx, types.NamespacedName{Name: tenantName, Namespace: req.Namespace}, tenant); err != nil {
+	// FIXED: Look for tenant in "default" namespace where tenants are actually created
+	if err := w.Discovery.client.Get(ctx, types.NamespacedName{Name: tenantName, Namespace: "default"}, tenant); err != nil {
+		if errors.IsNotFound(err) {
+			log.Info("Tenant not found, ignoring service update", "tenant", tenantName)
+			return ctrl.Result{}, nil // Tenant doesn't exist, nothing to update
+		}
 		log.Error(err, "Failed to get Tenant")
 		return ctrl.Result{}, err
 	}
@@ -330,6 +351,7 @@ func (w *ServiceWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
+	log.Info("Successfully updated service endpoints", "tenant", tenantName, "service", req.Name)
 	return ctrl.Result{}, nil
 }
 

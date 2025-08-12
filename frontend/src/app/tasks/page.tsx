@@ -12,6 +12,7 @@ import {
 	SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { useAuth } from '@/hooks/useAuth' // Assume this provides token and tenantId
 import {
 	AlertCircle,
 	Calendar,
@@ -29,7 +30,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
-// Define Task and Column types
+// Define Task and Column types (add linkedTo per spec for CRM object linking)
 interface Task {
 	id: string
 	title: string
@@ -39,96 +40,29 @@ interface Task {
 	assignedTo?: string
 	createdAt: string
 	dueDate?: string
+	linkedTo?: string // e.g., 'contact:123' or 'deal:456' – extend for spec's linking
 }
-
 interface Column {
 	id: string
 	title: string
-	tasks: Task[]
 	color: string
+	tasks: Task[]
 }
-
-// Initial mock data
-const initialColumns: Column[] = [
-	{
-		id: 'todo',
-		title: 'To Do',
-		color: 'bg-gray-100',
-		tasks: [
-			{
-				id: '1',
-				title: 'Setup project structure',
-				description: 'Create initial folder structure and basic components',
-				status: 'To Do',
-				priority: 'High',
-				assignedTo: 'John Doe',
-				createdAt: '2024-01-15T10:00:00Z',
-				dueDate: '2024-01-20T18:00:00Z',
-			},
-			{
-				id: '2',
-				title: 'Design database schema',
-				description: 'Create ER diagrams and database tables',
-				status: 'To Do',
-				priority: 'Medium',
-				createdAt: '2024-01-15T11:00:00Z',
-			},
-		],
-	},
-	{
-		id: 'inprogress',
-		title: 'In Progress',
-		color: 'bg-blue-100',
-		tasks: [
-			{
-				id: '3',
-				title: 'Implement authentication',
-				description: 'JWT-based auth system with login/logout',
-				status: 'In Progress',
-				priority: 'Critical',
-				assignedTo: 'Jane Smith',
-				createdAt: '2024-01-14T09:00:00Z',
-				dueDate: '2024-01-18T17:00:00Z',
-			},
-		],
-	},
-	{
-		id: 'review',
-		title: 'Review',
-		color: 'bg-yellow-100',
-		tasks: [
-			{
-				id: '4',
-				title: 'Code review - API endpoints',
-				description: 'Review REST API implementation',
-				status: 'Review',
-				priority: 'Medium',
-				assignedTo: 'Mike Johnson',
-				createdAt: '2024-01-13T14:00:00Z',
-			},
-		],
-	},
-	{
-		id: 'done',
-		title: 'Done',
-		color: 'bg-green-100',
-		tasks: [
-			{
-				id: '5',
-				title: 'Initial project setup',
-				description: 'Setup Git repository and CI/CD pipeline',
-				status: 'Done',
-				priority: 'Low',
-				assignedTo: 'John Doe',
-				createdAt: '2024-01-10T08:00:00Z',
-			},
-		],
-	},
+// API base URL
+const API_BASE = 'http://localhost:3001/api/v1'
+// Hardcoded columns (map statuses to these)
+const COLUMNS_CONFIG: Omit<Column, 'tasks'>[] = [
+	{ id: 'todo', title: 'To Do', color: 'bg-gray-100' },
+	{ id: 'inprogress', title: 'In Progress', color: 'bg-blue-100' },
+	{ id: 'review', title: 'Review', color: 'bg-yellow-100' },
+	{ id: 'done', title: 'Done', color: 'bg-green-100' },
 ]
-
 export default function TasksPage() {
-	const [columns, setColumns] = useState<Column[]>(initialColumns)
+	const [columns, setColumns] = useState<Column[]>(
+		COLUMNS_CONFIG.map(col => ({ ...col, tasks: [] }))
+	)
 	const [loading, setLoading] = useState(true)
+	const [error, setError] = useState<string | null>(null)
 	const [showNewTaskForm, setShowNewTaskForm] = useState(false)
 	const [draggedTask, setDraggedTask] = useState<Task | null>(null)
 	const [draggedFrom, setDraggedFrom] = useState<string | null>(null)
@@ -142,65 +76,128 @@ export default function TasksPage() {
 		priority: 'Medium' as Task['priority'],
 		assignedTo: '',
 		dueDate: '',
+		linkedTo: '', // New field for spec's linking to CRM objects
 	})
+	const { token, tenantId } = useAuth()
 
 	useEffect(() => {
-		async function loadTasks() {
-			try {
-				setLoading(true)
-				await fetchTasks()
-				console.log('Tasks loaded successfully')
-			} catch (error) {
-				console.error('Error loading tasks:', error)
-			} finally {
-				setLoading(false)
-			}
-		}
-		loadTasks()
+		fetchTasks()
 	}, [])
 
+	const getHeaders = () => ({
+		Authorization: `Bearer ${token}`,
+		'X-Tenant-ID': tenantId,
+		'Content-Type': 'application/json',
+	})
+
 	const fetchTasks = async () => {
+		setLoading(true)
+		setError(null)
 		try {
-			setLoading(true)
-			console.log('Loading tasks... (using mock data)')
-			await new Promise(resolve => setTimeout(resolve, 500))
-		} catch (error) {
-			console.error('Error fetching tasks:', error)
+			const response = await fetch(`${API_BASE}/tasks`, {
+				headers: getHeaders(),
+			})
+			if (!response.ok) throw new Error('Failed to fetch tasks')
+			const tasks: Task[] = await response.json()
+			const groupedColumns = COLUMNS_CONFIG.map(col => ({
+				...col,
+				tasks: tasks.filter(task => task.status === col.title),
+			}))
+			setColumns(groupedColumns)
+		} catch (err) {
+			setError('Error loading tasks. Please try again.')
+			console.error(err)
 		} finally {
 			setLoading(false)
 		}
 	}
 
-	// Get all tasks in a flat array
-	const getAllTasks = () => {
-		return columns.flatMap(col => col.tasks)
-	}
+	// Get all tasks flat
+	const getAllTasks = () => columns.flatMap(col => col.tasks)
 
-	// Filter tasks based on search and filters
+	// Filtered tasks for table
 	const getFilteredTasks = () => {
 		let tasks = getAllTasks()
-
 		if (searchTerm) {
 			tasks = tasks.filter(
 				task =>
 					task.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
 					task.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-					task.assignedTo?.toLowerCase().includes(searchTerm.toLowerCase())
+					task.assignedTo?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+					task.linkedTo?.toLowerCase().includes(searchTerm.toLowerCase())
 			)
 		}
-
-		if (statusFilter !== 'all') {
+		if (statusFilter !== 'all')
 			tasks = tasks.filter(task => task.status === statusFilter)
-		}
-
-		if (priorityFilter !== 'all') {
+		if (priorityFilter !== 'all')
 			tasks = tasks.filter(task => task.priority === priorityFilter)
-		}
-
 		return tasks
 	}
 
-	// Simple HTML5 drag and drop implementation
+	const addNewTask = async () => {
+		if (!newTask.title.trim()) return
+		const taskPayload = {
+			title: newTask.title,
+			description: newTask.description,
+			status: 'To Do',
+			priority: newTask.priority,
+			assignedTo: newTask.assignedTo,
+			dueDate: newTask.dueDate ? `${newTask.dueDate}T00:00:00` : undefined, // To LocalDateTime
+			linkedTo: newTask.linkedTo || undefined,
+		}
+		try {
+			const response = await fetch(`${API_BASE}/tasks`, {
+				method: 'POST',
+				headers: getHeaders(),
+				body: JSON.stringify(taskPayload),
+			})
+			if (!response.ok) throw new Error('Failed to create task')
+			await fetchTasks()
+			setNewTask({
+				title: '',
+				description: '',
+				priority: 'Medium',
+				assignedTo: '',
+				dueDate: '',
+				linkedTo: '',
+			})
+			setShowNewTaskForm(false)
+		} catch (err) {
+			setError('Error creating task.')
+			console.error(err)
+		}
+	}
+
+	const deleteTask = async (taskId: string) => {
+		try {
+			const response = await fetch(`${API_BASE}/tasks/${taskId}`, {
+				method: 'DELETE',
+				headers: getHeaders(),
+			})
+			if (!response.ok) throw new Error('Failed to delete task')
+			await fetchTasks()
+		} catch (err) {
+			setError('Error deleting task.')
+			console.error(err)
+		}
+	}
+
+	const updateTaskStatus = async (taskId: string, newStatus: string) => {
+		try {
+			const response = await fetch(`${API_BASE}/tasks/${taskId}`, {
+				method: 'PUT',
+				headers: getHeaders(),
+				body: JSON.stringify({ status: newStatus }),
+			})
+			if (!response.ok) throw new Error('Failed to update task')
+			await fetchTasks()
+		} catch (err) {
+			setError('Error updating task.')
+			console.error(err)
+		}
+	}
+
+	// Drag-and-drop handlers (update to call updateTaskStatus on drop)
 	const handleDragStart = (
 		e: React.DragEvent,
 		task: Task,
@@ -209,7 +206,6 @@ export default function TasksPage() {
 		setDraggedTask(task)
 		setDraggedFrom(columnId)
 		e.dataTransfer.effectAllowed = 'move'
-		e.dataTransfer.setData('text/html', e.currentTarget.outerHTML)
 		e.currentTarget.style.opacity = '0.5'
 	}
 
@@ -224,114 +220,12 @@ export default function TasksPage() {
 		e.dataTransfer.dropEffect = 'move'
 	}
 
-	const handleDrop = (e: React.DragEvent, targetColumnId: string) => {
+	const handleDrop = async (e: React.DragEvent, targetColumnId: string) => {
 		e.preventDefault()
-
-		if (!draggedTask || !draggedFrom) return
-
-		if (draggedFrom === targetColumnId) return
-
-		// Find target column
+		if (!draggedTask || !draggedFrom || draggedFrom === targetColumnId) return
 		const targetColumn = columns.find(col => col.id === targetColumnId)
 		if (!targetColumn) return
-
-		// Update task status and move between columns
-		const updatedTask = { ...draggedTask, status: targetColumn.title }
-
-		setColumns(
-			columns.map(col => {
-				if (col.id === draggedFrom) {
-					// Remove from source column
-					return {
-						...col,
-						tasks: col.tasks.filter(t => t.id !== draggedTask.id),
-					}
-				}
-				if (col.id === targetColumnId) {
-					// Add to target column
-					return {
-						...col,
-						tasks: [...col.tasks, updatedTask],
-					}
-				}
-				return col
-			})
-		)
-
-		console.log(
-			`Moved task ${draggedTask.title} from ${draggedFrom} to ${targetColumnId}`
-		)
-	}
-
-	const addNewTask = () => {
-		if (!newTask.title.trim()) return
-
-		const task: Task = {
-			id: Date.now().toString(),
-			title: newTask.title,
-			description: newTask.description,
-			status: 'To Do',
-			priority: newTask.priority,
-			assignedTo: newTask.assignedTo,
-			createdAt: new Date().toISOString(),
-			dueDate: newTask.dueDate || undefined,
-		}
-
-		setColumns(
-			columns.map(col =>
-				col.id === 'todo' ? { ...col, tasks: [...col.tasks, task] } : col
-			)
-		)
-
-		setNewTask({
-			title: '',
-			description: '',
-			priority: 'Medium',
-			assignedTo: '',
-			dueDate: '',
-		})
-		setShowNewTaskForm(false)
-	}
-
-	const deleteTask = (taskId: string, columnId?: string) => {
-		setColumns(
-			columns.map(col =>
-				col.tasks.some(task => task.id === taskId)
-					? { ...col, tasks: col.tasks.filter(task => task.id !== taskId) }
-					: col
-			)
-		)
-	}
-
-	const updateTaskStatus = (taskId: string, newStatus: string) => {
-		const targetColumn = columns.find(col => col.title === newStatus)
-		if (!targetColumn) return
-
-		setColumns(
-			columns.map(col => {
-				// Remove from current column
-				const taskToMove = col.tasks.find(task => task.id === taskId)
-				if (taskToMove) {
-					const updatedTask = { ...taskToMove, status: newStatus }
-					return {
-						...col,
-						tasks: col.tasks.filter(task => task.id !== taskId),
-					}
-				}
-				// Add to new column
-				if (col.title === newStatus) {
-					const taskToMove = getAllTasks().find(task => task.id === taskId)
-					if (taskToMove) {
-						const updatedTask = { ...taskToMove, status: newStatus }
-						return {
-							...col,
-							tasks: [...col.tasks, updatedTask],
-						}
-					}
-				}
-				return col
-			})
-		)
+		await updateTaskStatus(draggedTask.id, targetColumn.title) // Call API to update status
 	}
 
 	const getPriorityColor = (priority: Task['priority']) => {
@@ -404,6 +298,7 @@ export default function TasksPage() {
 	return (
 		<AuthenticatedLayout>
 			<div className='min-h-screen bg-gray-50 p-6'>
+				{error && <div className='mb-4 text-red-500'>{error}</div>}
 				{/* Header */}
 				<div className='flex items-center justify-between mb-6'>
 					<div>
@@ -441,7 +336,6 @@ export default function TasksPage() {
 						</Button>
 					</div>
 				</div>
-
 				{/* Stats */}
 				<div className='grid grid-cols-4 gap-4 mb-6'>
 					{columns.map(column => (
@@ -455,7 +349,6 @@ export default function TasksPage() {
 						</Card>
 					))}
 				</div>
-
 				{/* Filters and Search (for table view) */}
 				{viewMode === 'table' && (
 					<Card className='mb-6'>
@@ -503,7 +396,6 @@ export default function TasksPage() {
 						</CardContent>
 					</Card>
 				)}
-
 				{/* New Task Form */}
 				{showNewTaskForm && (
 					<Card className='mb-6'>
@@ -557,6 +449,13 @@ export default function TasksPage() {
 									}
 								/>
 							</div>
+							<Input
+								placeholder='Linked to (e.g., contact:123)'
+								value={newTask.linkedTo}
+								onChange={e =>
+									setNewTask({ ...newTask, linkedTo: e.target.value })
+								}
+							/>
 							<div className='flex gap-2'>
 								<Button onClick={addNewTask}>Создать</Button>
 								<Button
@@ -569,7 +468,6 @@ export default function TasksPage() {
 						</CardContent>
 					</Card>
 				)}
-
 				{/* Table View */}
 				{viewMode === 'table' && (
 					<Card>
@@ -611,6 +509,11 @@ export default function TasksPage() {
 													{task.description && (
 														<div className='text-sm text-gray-500 mt-1'>
 															{task.description}
+														</div>
+													)}
+													{task.linkedTo && (
+														<div className='text-sm text-gray-500 mt-1'>
+															Linked: {task.linkedTo}
 														</div>
 													)}
 												</div>
@@ -686,7 +589,6 @@ export default function TasksPage() {
 						</div>
 					</Card>
 				)}
-
 				{/* Kanban Board */}
 				{viewMode === 'kanban' && (
 					<div className='grid grid-cols-4 gap-6'>
@@ -700,7 +602,6 @@ export default function TasksPage() {
 										{column.tasks.length} задач
 									</span>
 								</div>
-
 								<div
 									className='min-h-[200px] space-y-3 p-2 rounded-lg border-2 border-dashed border-transparent transition-colors'
 									onDragOver={handleDragOver}
@@ -731,26 +632,28 @@ export default function TasksPage() {
 													<Button
 														variant='ghost'
 														size='sm'
-														onClick={() => deleteTask(task.id, column.id)}
+														onClick={() => deleteTask(task.id)}
 														className='text-red-500 hover:text-red-700 p-1'
 													>
 														<Trash2 className='h-4 w-4' />
 													</Button>
 												</div>
-
 												{task.description && (
 													<p className='text-sm text-gray-600 mb-3 ml-6'>
 														{task.description}
 													</p>
 												)}
-
+												{task.linkedTo && (
+													<p className='text-sm text-gray-500 mb-3 ml-6'>
+														Linked: {task.linkedTo}
+													</p>
+												)}
 												<div className='flex items-center justify-between mb-2 ml-6'>
 													<Badge
 														className={`text-white ${getPriorityColor(task.priority)}`}
 													>
 														{task.priority}
 													</Badge>
-
 													{task.dueDate && (
 														<div className='flex items-center text-xs text-gray-500'>
 															<Calendar className='h-3 w-3 mr-1' />
@@ -758,7 +661,6 @@ export default function TasksPage() {
 														</div>
 													)}
 												</div>
-
 												<div className='flex items-center justify-between text-xs text-gray-500 ml-6'>
 													{task.assignedTo && (
 														<div className='flex items-center'>
@@ -766,7 +668,6 @@ export default function TasksPage() {
 															{task.assignedTo}
 														</div>
 													)}
-
 													<div className='flex items-center'>
 														<Clock className='h-3 w-3 mr-1' />
 														{formatDate(task.createdAt)}
@@ -780,30 +681,6 @@ export default function TasksPage() {
 						))}
 					</div>
 				)}
-
-				{/* Backend Note */}
-				<Card className='mt-6 border-yellow-200 bg-yellow-50'>
-					<CardContent className='p-4'>
-						<div className='flex items-start space-x-3'>
-							<div className='text-yellow-600 text-lg'>⚠️</div>
-							<div>
-								<h4 className='font-medium text-yellow-800'>
-									Backend Integration
-								</h4>
-								<p className='text-sm text-yellow-700 mt-1'>
-									Эта страница использует mock данные. Для полной
-									функциональности необходимо:
-								</p>
-								<ul className='text-sm text-yellow-700 mt-2 list-disc list-inside'>
-									<li>Создать API endpoints для задач в Kotlin backend</li>
-									<li>Добавить модели Task, TaskStatus, TaskPriority</li>
-									<li>Реализовать CRUD операции</li>
-									<li>Добавить права доступа и назначение задач</li>
-								</ul>
-							</div>
-						</div>
-					</CardContent>
-				</Card>
 			</div>
 		</AuthenticatedLayout>
 	)
